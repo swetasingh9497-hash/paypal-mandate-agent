@@ -8,6 +8,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from .paypal import capture_order
+from .pipeline import run_pipeline
 
 app = FastAPI(title="Mandate")
 
@@ -27,7 +28,16 @@ def health():
 
 @app.post("/api/run")
 async def run(req: RunRequest):
-    # MOCK: baad mein asli pipeline se replace hoga
+    try:
+        return await run_pipeline(req.text)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"PayPal error: {e.response.text}")
+
+@app.post("/api/mock/run")
+async def run_mock(req: RunRequest):
+    # Stable nakli data, frontend development ke liye
     return {
         "mandate": {"item": "desk lamp", "max_total": 60, "currency": "USD",
                     "min_rating": 4.0, "max_delivery_days": 7,
@@ -56,7 +66,6 @@ async def capture(order_id: str):
 
 @app.get("/paypal/return")
 def paypal_return(token: str):
-    # PayPal approve ke baad yahan bhejta hai; token = order id
     return RedirectResponse(f"http://localhost:5173/?order={token}")
 
 @app.get("/paypal/cancel")
