@@ -1,5 +1,7 @@
 from dotenv import load_dotenv
 load_dotenv()
+import os
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -14,7 +16,7 @@ app = FastAPI(title="Mandate")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=[FRONTEND_URL, "http://localhost:3000"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -66,8 +68,8 @@ async def capture(order_id: str):
 
 @app.get("/paypal/return")
 def paypal_return(token: str):
-    return RedirectResponse(f"http://localhost:5173/?order={token}")
+    return RedirectResponse(f"{FRONTEND_URL}/?order={token}")
 
 @app.get("/paypal/cancel")
 def paypal_cancel():
-    return RedirectResponse("http://localhost:5173/?cancelled=1")
+    return RedirectResponse(f"{FRONTEND_URL}/?cancelled=1")

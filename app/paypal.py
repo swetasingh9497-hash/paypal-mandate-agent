@@ -13,6 +13,7 @@ async def _token(client: httpx.AsyncClient) -> str:
 
 async def create_order(amount: float, currency: str, description: str) -> dict:
     async with httpx.AsyncClient(timeout=20) as c:
+        backend = os.getenv("BACKEND_URL", "http://localhost:8000")
         token = await _token(c)
         r = await c.post(
             f"{BASE}/v2/checkout/orders",
@@ -26,8 +27,8 @@ async def create_order(amount: float, currency: str, description: str) -> dict:
                 "payment_source": {
                     "paypal": {
                         "experience_context": {
-                            "return_url": "http://localhost:8000/paypal/return",
-                            "cancel_url": "http://localhost:8000/paypal/cancel",
+                            "return_url": f"{backend}/paypal/return",
+                            "cancel_url": f"{backend}/paypal/cancel",
                             "user_action": "PAY_NOW",
                             "shipping_preference": "NO_SHIPPING",
                         }
