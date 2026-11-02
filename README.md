@@ -53,7 +53,7 @@ Neither works alone: without AI there is no agent, and without PayPal the agent 
 
 - The rules engine is plain code with unit tests, not an LLM.
 - Product titles and descriptions are treated as untrusted text. <describe your prompt-injection defence once built>
-- Missing data (no rating, no delivery estimate) is rejected, never assumed fine.
+- Rules that cannot be verified (e.g. missing rating or delivery data) never auto-pay. They are routed to human approval with an explicit reason.
 - Secrets live in `.env` and are never committed.
 
 ## Tech stack
