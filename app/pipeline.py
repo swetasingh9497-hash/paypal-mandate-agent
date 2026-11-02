@@ -12,7 +12,12 @@ async def run_pipeline(text: str) -> dict:
     # Jo reject nahi hue unme se best: rating zyada, phir price kam.
     # Baad mein yahan LLM ranking aayegi.
     passing = [c for c in candidates if c["decision"].action != "reject"]
-    passing.sort(key=lambda c: (-(c["product"].rating or 0), c["product"].price))
+    ACTION_PRIORITY = {"auto_pay": 0, "needs_approval": 1}
+    passing.sort(key=lambda c: (
+    ACTION_PRIORITY[c["decision"].action],
+    -(c["product"].rating or 0),
+    c["product"].price,
+))
     chosen = passing[0] if passing else None
 
     order = None
