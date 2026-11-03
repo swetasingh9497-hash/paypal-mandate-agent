@@ -35,8 +35,8 @@ Mandate (text)
 
 ## Why PayPal and AI both matter
 
-- **AI:** <what the LLM does in your build, e.g. mandate parsing, ranking, explanations>
-- **PayPal:** <what you use, e.g. Orders API to create and capture payments, buyer approval flow>
+- **AI (Gemini):** turns a plain-language request into structured rules, and ranks and explains the products that already passed those rules.
+- **PayPal (Orders API, Sandbox):** creates the order and captures payment only after the buyer approves.
 
 Neither works alone: without AI there is no agent, and without PayPal the agent cannot safely complete a purchase.
 
@@ -44,7 +44,7 @@ Neither works alone: without AI there is no agent, and without PayPal the agent 
 
 - Natural-language mandate -> validated structured rules
 - Deterministic rules engine (budget, rating, delivery time, blocked merchants, currency)
-- Safe defaults: missing data means reject
+- Unverifiable rules route to human approval, never auto-pay.
 - Human approval flow for purchases above the auto-approve limit
 - Full audit trail: why each product was chosen or rejected
 - <add only what is actually built>
@@ -58,14 +58,14 @@ Neither works alone: without AI there is no agent, and without PayPal the agent 
 
 ## Tech stack
 
-Python, FastAPI, Pydantic, httpx, <LLM provider>, <product data API>, React, PayPal Orders API (Sandbox), <deployment platform>
+Python, FastAPI, Pydantic, httpx, Gemini API, Channel3 API, React, PayPal Orders API (Sandbox)
 
 ## Getting started
 
 **Prerequisites:** Python 3.11+, Node.js (for the frontend), a PayPal Developer account.
 
 ```bash
-git clone https://github.com/<your-username>/mandate-agent.git
+git clone https://github.com/swetasingh9497-hash/paypal-mandate-agent.git aur cd paypal-mandate-agent
 cd mandate-agent
 python -m venv .venv
 # Windows: .venv\Scripts\activate   |  Mac/Linux: source .venv/bin/activate
@@ -78,9 +78,11 @@ Fill in `.env`:
 ```
 PAYPAL_CLIENT_ID=
 PAYPAL_SECRET=
-ANTHROPIC_API_KEY=
+GEMINI_API_KEY=
 CHANNEL3_API_KEY=
 LLM_MODEL=
+FRONTEND_URL=
+BACKEND_URL=
 ```
 
 Run the backend:
@@ -106,14 +108,17 @@ Frontend: <add steps once the frontend exists>
 
 ## Team
 
-- <Your name> - <role, e.g. agent core and AI>
-- <Teammate name> - <role, e.g. frontend and payment flow>
+- Sweta Singh - agent core and AI
+- Vaibhav Vishwakarma - frontend and payment flow
 
 ## Limitations and roadmap
 
-- Currently Sandbox only
-- <honest list of what is missing or simplified>
-- Next: <2 or 3 realistic ideas>
+- PayPal Sandbox only; no real money moves.
+- The PayPal order is created against our merchant account, not the store that sells the product. Fulfillment with the store is out of scope.
+- PayPal Orders always requires buyer approval, so “auto-pay” means “within your rules, order created without asking in the app”. Truly hands-free payment would need vaulted payment methods.
+- Product data comes from Channel3 and has no ratings or delivery times, so rating and delivery rules route to human approval.
+- US products and USD only.
+- Free-tier API quotas limit how many live runs are possible.
 
 ## License
 
