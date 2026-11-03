@@ -18,13 +18,16 @@ def _best_offer(offers, currency):
 async def search_products(mandate: Mandate, limit: int = 10) -> list[Product]:
     query = f"{mandate.item} under ${mandate.max_total:g}"
     async with httpx.AsyncClient(timeout=20) as c:
-        r = await c.post(
-            API,
-            headers={"x-api-key": os.environ["CHANNEL3_API_KEY"],
-                     "Content-Type": "application/json"},
-            json={"query": query, "limit": limit},
-        )
-        r.raise_for_status()
+        try:
+            r = await c.post(
+                API,
+                headers={"x-api-key": os.environ["CHANNEL3_API_KEY"],
+                         "Content-Type": "application/json"},
+                json={"query": query, "limit": limit},
+            )
+            r.raise_for_status()
+        except httpx.HTTPError:
+            raise RuntimeError("Product search is unavailable right now. Please try again.")
 
     products = []
     for p in r.json().get("products", []):
