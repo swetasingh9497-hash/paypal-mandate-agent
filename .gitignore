@@ -1,5 +1,22 @@
 .env
 .venv/
+venv/
+node_modules/
+dist/
+build/
+orders.db
+*.db
 __pycache__/
-.pytest_cache/desktop.ini
-desktop.ini
+.pytest_cache/
+*.log
+.DS_Store
+frontend/.env
+frontend/node_modules/
+frontend/dist/
+frontend_old/
+*.pyc
+*.zip
+*.screenshot.png
+*.screenshot.jpg
+frontend old/
+frontend/.lovable/

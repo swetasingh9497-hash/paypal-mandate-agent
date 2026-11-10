@@ -1,4 +1,5 @@
-import os, httpx
+import os
+import httpx
 
 BASE = "https://api-m.sandbox.paypal.com"
 
@@ -12,8 +13,8 @@ async def _token(client: httpx.AsyncClient) -> str:
     return r.json()["access_token"]
 
 async def create_order(amount: float, currency: str, description: str) -> dict:
+    backend_url = os.getenv("BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
     async with httpx.AsyncClient(timeout=20) as c:
-        backend = os.getenv("BACKEND_URL", "http://localhost:8000")
         token = await _token(c)
         r = await c.post(
             f"{BASE}/v2/checkout/orders",
@@ -27,8 +28,8 @@ async def create_order(amount: float, currency: str, description: str) -> dict:
                 "payment_source": {
                     "paypal": {
                         "experience_context": {
-                            "return_url": f"{backend}/paypal/return",
-                            "cancel_url": f"{backend}/paypal/cancel",
+                            "return_url": f"{backend_url}/paypal/return",
+                            "cancel_url": f"{backend_url}/paypal/cancel",
                             "user_action": "PAY_NOW",
                             "shipping_preference": "NO_SHIPPING",
                         }
@@ -37,7 +38,7 @@ async def create_order(amount: float, currency: str, description: str) -> dict:
             },
         )
         r.raise_for_status()
-        return r.json()   # links mein approval URL hota hai
+        return r.json()
 
 async def capture_order(order_id: str) -> dict:
     async with httpx.AsyncClient(timeout=20) as c:

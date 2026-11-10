@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <defs>
+    <linearGradient id="mandateGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#009CDE" />
+      <stop offset="100%" stop-color="#6C5CE7" />
+    </linearGradient>
+  </defs>
+  <!-- Rounded square background -->
+  <rect x="1" y="1" width="30" height="30" rx="7" fill="url(#mandateGradient)" />
+  <!-- Bold geometric "M" -->
+  <path d="M9 21V11L16 16L23 11V21L16 16Z" fill="white" stroke="none" />
+</svg>

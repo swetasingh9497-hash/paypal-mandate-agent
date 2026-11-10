@@ -3,5 +3,4 @@ uvicorn
 pydantic
 httpx
 python-dotenv
-pytest
 google-genai

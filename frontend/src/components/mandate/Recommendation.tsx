@@ -1,0 +1,345 @@
+import { motion } from "framer-motion";
+import { useState } from "react";
+import { CircleCheck, Lightbulb, Store, XCircle, CheckCircle, AlertTriangle, Loader2 } from "lucide-react";
+import type { Candidate, RunResponse } from "@/lib/types";
+import { cn } from "@/lib/utils";
+import { CountUp, DecisionBadge, Rating, actionStyles, usd } from "./shared";
+import { formatDetail } from "@/lib/formatDetail";
+import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
+
+function SafeAudit({ data }: { data: RunResponse }) {
+  try {
+    if (!data.audit || data.audit.length === 0) return null;
+    return (
+      <div className="space-y-2 font-mono text-sm">
+        {data.audit.map((a, i) => (
+          <div key={i} className="flex gap-3">
+            <span className="w-20 shrink-0 text-blue">{a.step}</span>
+            <span className="break-words">{formatDetail(a.detail)}</span>
+          </div>
+        ))}
+      </div>
+    );
+  } catch {
+    return (
+      <div className="space-y-2 font-mono text-sm text-bad">
+        <div className="flex gap-3">
+          <span className="w-20 shrink-0 text-blue">error</span>
+          <span className="break-words">Could not display this entry</span>
+        </div>
+      </div>
+    );
+  }
+}
+
+interface SelectableCardProps {
+  candidate: Candidate;
+  isSelected: boolean;
+  onSelect: () => void;
+  disabled?: boolean;
+  rejectReason?: string;
+}
+
+function SelectableCard({ candidate, isSelected, onSelect, disabled, rejectReason }: SelectableCardProps) {
+  const p = candidate.product;
+  const action = candidate.decision.action;
+  const styles = actionStyles[action];
+
+  return (
+    <TooltipProvider>
+      <button
+        type="button"
+        onClick={onSelect}
+        disabled={disabled}
+        className={cn(
+          "relative glass glass-hover border-l-4 p-4 transition-all",
+          styles.border,
+          disabled && "opacity-50 cursor-not-allowed",
+          !disabled && "cursor-pointer",
+          isSelected && "ring-2 ring-blue/50 shadow-[0_0_0_2px_rgba(0,156,222,0.3)]"
+        )}
+        tabIndex={disabled ? -1 : 0}
+        onKeyDown={(e) => {
+          if ((e.key === "Enter" || e.key === " ") && !disabled) {
+            e.preventDefault();
+            onSelect();
+          }
+        }}
+        aria-pressed={isSelected}
+        aria-disabled={disabled}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <p className="font-medium leading-snug">{p.title}</p>
+          <span className="font-display font-semibold tnum">{usd(p.price)}</span>
+        </div>
+        <div className="mt-1 flex items-center gap-3 text-sm text-muted-foreground">
+          <span>{p.merchant}</span>
+          <Rating value={p.rating} />
+        </div>
+        {isSelected && (
+          <div className="absolute inset-0 border-2 border-blue/30 rounded-r-lg pointer-events-none" aria-hidden />
+        )}
+        {disabled && rejectReason && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <AlertTriangle className="absolute top-2 right-2 size-4 text-bad/70" aria-hidden />
+            </TooltipTrigger>
+            <TooltipContent side="top" align="start" className="max-w-xs">
+              <p className="text-sm text-bad">{rejectReason}</p>
+            </TooltipContent>
+          </Tooltip>
+        )}
+      </button>
+    </TooltipProvider>
+  );
+}
+
+export function Recommendation({ 
+  data, 
+  onPay, 
+  selectedId, 
+  onSelect,
+  userEmail
+}: { 
+  data: RunResponse; 
+  onPay: (c: Candidate) => void;
+  selectedId: string | null;
+  onSelect: (c: Candidate) => void;
+  userEmail: string;
+}) {
+  const chosen = data.candidates.find((c) => c.product.id === data.chosen_id);
+  const selectedCandidate = data.candidates.find((c) => c.product.id === selectedId) ?? chosen;
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [paying, setPaying] = useState(false);
+  const [payError, setPayError] = useState<string | null>(null);
+
+  const handlePay = async (candidate: Candidate) => {
+    if (!data.run_id) {
+      // Fallback for old backend or demo mode
+      if (data.order) {
+        onPay(candidate);
+      }
+      return;
+    }
+    
+    const action = candidate.decision.action;
+    
+    if (action === "needs_approval") {
+      setConfirmOpen(true);
+      return;
+    }
+    
+    // auto_pay - proceed directly
+    await executePayment(candidate);
+  };
+
+  const executePayment = async (candidate: Candidate) => {
+    if (!data.run_id || !userEmail) return;
+    setPaying(true);
+    setPayError(null);
+    
+    try {
+      const { selectProduct } = await import("@/lib/api");
+      const result = await selectProduct(data.run_id, candidate.product.id, userEmail);
+      
+      // Save selected candidate for receipt
+      sessionStorage.setItem("mandate:chosen", JSON.stringify(candidate));
+      
+      // Redirect to PayPal
+      window.location.href = result.order.approve_url;
+    } catch (err) {
+      setPayError(err instanceof Error ? err.message : "Payment failed");
+    } finally {
+      setPaying(false);
+    }
+  };
+
+  const handleConfirm = () => {
+    setConfirmOpen(false);
+    if (selectedCandidate) {
+      executePayment(selectedCandidate);
+    }
+  };
+
+  // Empty state: no chosen product
+  if (!chosen || !data.order) {
+    const rejectReasons = Array.from(
+      new Set(
+        data.candidates
+          .filter((c) => c.decision.action === "reject")
+          .flatMap((c) => c.decision.reasons)
+      )
+    );
+    const nonRejected = data.candidates.some((c) => c.decision.action !== "reject");
+
+    return (
+      <div className="glass p-6">
+        <div className="mb-4 flex items-center gap-2">
+          <XCircle className="size-5 text-bad" aria-hidden />
+          <h3 className="font-display text-lg font-semibold">No recommendation yet</h3>
+        </div>
+        {rejectReasons.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-3">
+            {rejectReasons.map((r) => (
+              <span key={r} className="rounded-full bg-bad/15 px-3 py-1 text-xs text-bad">{r}</span>
+            ))}
+          </div>
+        )}
+        {nonRejected && <p className="text-sm text-muted-foreground">Pick a product below</p>}
+        {data.order_error && (
+          <div className="mt-4 p-3 rounded-lg bg-bad/10 border border-bad/20 text-sm text-bad">
+            {data.order_error}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const p = chosen.product;
+  const isRecommended = chosen.product.id === data.chosen_id;
+  const showYourPick = selectedId && selectedId !== data.chosen_id;
+
+  return (
+    <div className="gradient-border overflow-hidden rounded-[20px]">
+      <div className="grid gap-6 p-5 sm:p-7 md:grid-cols-2">
+        <div className="space-y-3">
+          <DecisionBadge action={chosen.decision.action} />
+          <div className="flex items-center gap-2">
+            <h3 className="font-display text-xl font-semibold sm:text-2xl">{p.title}</h3>
+            {showYourPick && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-blue/10 text-blue px-2 py-0.5 text-xs font-medium">
+                <CheckCircle className="size-3" /> Your pick
+              </span>
+            )}
+            {isRecommended && !showYourPick && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-ok/10 text-ok px-2 py-0.5 text-xs font-medium">
+                <CheckCircle className="size-3" /> Recommended
+              </span>
+            )}
+          </div>
+          <p className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Store className="size-4" aria-hidden /> {p.merchant}
+          </p>
+          <CountUp value={p.price} className="block font-display text-4xl font-bold sm:text-5xl" />
+          <Rating value={p.rating} />
+        </div>
+        <div className="space-y-5">
+          <div>
+            <p className="mb-2 text-xs uppercase tracking-widest text-muted-foreground">Rules passed</p>
+            <ul className="space-y-2">
+              {chosen.decision.reasons.map((r, i) => (
+                <motion.li key={r} initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.3 + i * 0.12 }} className="flex items-center gap-2 text-sm">
+                  <CircleCheck className="size-4 shrink-0 text-ok" aria-hidden /> {r}
+                </motion.li>
+              ))}
+            </ul>
+          </div>
+          {data.explanation?.summary && (
+            <div>
+              <p className="mb-1 flex items-center gap-1.5 text-xs uppercase tracking-widest text-muted-foreground">
+                <Lightbulb className="size-3.5" aria-hidden /> Why this one
+              </p>
+              <p className="text-sm">{data.explanation.summary}</p>
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="perforated h-3.5 bg-glass-border/40" aria-hidden />
+      <div className="bg-muted p-5 sm:p-6">
+        <div className="space-y-3">
+          {data.order_error && (
+            <div className="p-3 rounded-lg bg-bad/10 border border-bad/20 text-sm text-bad">
+              {data.order_error}
+            </div>
+          )}
+          <TooltipProvider>
+            <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+              <DialogTrigger asChild>
+                <Button
+                  onClick={() => handlePay(selectedCandidate || chosen)}
+                  disabled={paying}
+                  className="w-full rounded-full bg-gold px-6 py-3.5 font-display font-bold text-navy transition hover:brightness-105 hover:-translate-y-0.5 disabled:opacity-50"
+                >
+                  {paying ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <Loader2 className="size-4 animate-spin" />
+                      Processing...
+                    </span>
+                  ) : selectedCandidate?.decision.action === "needs_approval" ? (
+                    `Review and approve ${usd(selectedCandidate.product.price)}`
+                  ) : (
+                    `Pay ${usd(p.price)} with PayPal`
+                  )}
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="max-w-md">
+                <DialogHeader>
+                  <DialogTitle>Approve payment</DialogTitle>
+                  <DialogDescription>
+                    Approve ${usd(selectedCandidate?.product.price || p.price)} to {selectedCandidate?.product.merchant || p.merchant}?
+                  </DialogDescription>
+                </DialogHeader>
+                <ul className="mt-4 space-y-2 text-sm">
+                  {selectedCandidate?.decision.reasons.map((r) => (
+                    <li key={r} className="flex items-center gap-2 text-muted-foreground">
+                      <AlertTriangle className="size-4 shrink-0 text-warn" />
+                      {r}
+                    </li>
+                  ))}
+                </ul>
+                <DialogFooter className="gap-2">
+                  <Button variant="outline" onClick={() => setConfirmOpen(false)}>Cancel</Button>
+                  <Button onClick={handleConfirm} disabled={paying}>
+                    {paying ? <Loader2 className="size-4 animate-spin" /> : "Approve"}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </TooltipProvider>
+          
+          {selectedCandidate && selectedCandidate.decision.action === "auto_pay" && (
+            <p className="text-xs text-muted-foreground text-center">
+              Within your ${usd(data.mandate.auto_approve_under)} auto-approve limit
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function OtherCandidates({ data, selectedId, onSelect }: { 
+  data: RunResponse; 
+  selectedId: string | null;
+  onSelect: (c: Candidate) => void;
+}) {
+  const others = data.candidates.filter((c) => c.product.id !== data.chosen_id);
+  return (
+    <div className="grid gap-3 sm:grid-cols-2">
+      {others.map((c) => {
+        const rejected = c.decision.action === "reject";
+        const isSelected = selectedId === c.product.id;
+        const note = data.explanation?.notes?.[c.product.id];
+        const rejectReason = rejected ? c.decision.reasons.join("; ") : undefined;
+        
+        return (
+          <SelectableCard
+            key={c.product.id}
+            candidate={c}
+            isSelected={isSelected}
+            onSelect={() => onSelect(c)}
+            disabled={rejected}
+            rejectReason={rejectReason}
+          >
+            {note && <p className="mt-2 text-sm">{note}</p>}
+            {rejected && <p className="mt-1 text-sm text-bad">{c.decision.reasons.join("; ")}</p>}
+          </SelectableCard>
+        );
+      })}
+    </div>
+  );
+}
+
+export { SafeAudit };

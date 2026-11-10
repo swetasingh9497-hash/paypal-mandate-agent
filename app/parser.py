@@ -34,17 +34,13 @@ def parse_mandate(text: str, retries: int = 1) -> Mandate:
     last_err = None
     mandate = None
     for _ in range(retries + 1):
-        try:
-            raw = complete_json(SYSTEM, prompt)
-        except Exception:
-            raise RuntimeError("The AI service is busy. Please try again in a minute.")
+        raw = complete_json(SYSTEM, prompt)
         try:
             mandate = Mandate.model_validate(json.loads(_strip_fences(raw)))
             break
         except (json.JSONDecodeError, ValidationError) as e:
             last_err = e
             prompt = f"{text}\n\nYour previous output was invalid ({e}). Return only valid JSON."
-
     if mandate is None:
         if "max_total" in str(last_err):
             raise ValueError(
