@@ -15,94 +15,122 @@ def test_run_response_contains_run_id(test_client):
 
 def test_unknown_run_returns_404(test_client):
     """Test /api/runs/{run_id}/select returns 404 for unknown run."""
-    response = test_client.post("/api/runs/nonexistent/select", json={"product_id": "1", "user_email": "test@test.com"})
+    response = test_client.post("/api/runs/nonexistent/select", json={"product_id": "1"})
     assert response.status_code == 404
     assert "Run not found" in response.json()["detail"]
 
 
 def test_unknown_product_returns_404(test_client):
     """Test /api/runs/{run_id}/select returns 404 for unknown product."""
-    run_response = test_client.post("/api/mock/run", json={"text": "Buy a lamp under $50", "user_email": "test@test.com"})
+    run_response = test_client.post("/api/mock/run", json={"text": "Buy a lamp under $50"})
     run_id = run_response.json()["run_id"]
 
-    response = test_client.post(f"/api/runs/{run_id}/select", json={"product_id": "999", "user_email": "test@test.com"})
+    response = test_client.post(f"/api/runs/{run_id}/select", json={"product_id": "999"})
     assert response.status_code == 404
     assert "Product not found" in response.json()["detail"]
 
 
-def test_user_mismatch_returns_403(test_client):
-    """Test /api/runs/{run_id}/select returns 403 for user mismatch."""
-    run_response = test_client.post("/api/mock/run", json={"text": "Buy a lamp under $50", "user_email": "test@test.com"})
-    run_id = run_response.json()["run_id"]
-
-    response = test_client.post(f"/api/runs/{run_id}/select", json={"product_id": "1", "user_email": "other@test.com"})
-    assert response.status_code == 403
-    assert "User mismatch" in response.json()["detail"]
-
-
 def test_rejected_product_returns_409(test_client):
     """Test /api/runs/{run_id}/select returns 409 for rejected product."""
-    run_response = test_client.post("/api/mock/run", json={"text": "Buy a lamp under $50", "user_email": "test@test.com"})
+    run_response = test_client.post("/api/mock/run", json={"text": "Buy a lamp under $50"})
     run_id = run_response.json()["run_id"]
 
     # Product 2 is rejected in mock run
-    response = test_client.post(f"/api/runs/{run_id}/select", json={"product_id": "2", "user_email": "test@test.com"})
+    response = test_client.post(f"/api/runs/{run_id}/select", json={"product_id": "2"})
     assert response.status_code == 409
     assert "rejected" in response.json()["detail"].lower()
 
+def test_user_mismatch_returns_403(test_client):
+    """Only the user who made a run may select from it."""
+    from app.auth import make_token
+
+    run_response = test_client.post(
+        "/api/mock/run",
+        json={"text": "Buy a lamp under $50", "user_email": "owner@test.com"},
+    )
+    run_id = run_response.json()["run_id"]
+
+    # another user, identified by email (no token)
+    r = test_client.post(
+        f"/api/runs/{run_id}/select",
+        json={"product_id": "1", "user_email": "intruder@test.com"},
+    )
+    assert r.status_code == 403
+    assert "mismatch" in r.json()["detail"].lower()
+
+    # another user, identified by a signed token
+    r = test_client.post(
+        f"/api/runs/{run_id}/select",
+        json={"product_id": "1"},
+        headers={"Authorization": f"Bearer {make_token('intruder@test.com')}"},
+    )
+    assert r.status_code == 403
+
+    # the owner passes the ownership check (product 2 is rejected -> 409, not 403)
+    r = test_client.post(
+        f"/api/runs/{run_id}/select",
+        json={"product_id": "2"},
+        headers={"Authorization": f"Bearer {make_token('owner@test.com')}"},
+    )
+    assert r.status_code == 409
+
 
 def test_cap_exceeded_returns_409(test_client, db_conn):
-    """Test /api/runs/{run_id}/select returns 409 when monthly cap would be exceeded."""
-    run_response = test_client.post("/api/mock/run", json={"text": "Buy a lamp under $50", "user_email": "captest@test.com"})
-    run_id = run_response.json()["run_id"]
-    run_data = run_response.json()
-    
-    # Find a non-rejected product (product 1)
-    passing_products = [c["product"] for c in run_data["candidates"] if c["decision"]["action"] != "reject"]
-    if not passing_products:
-        pytest.skip("No passing products in run")
-    
-    product = passing_products[0]
-    product_id = product["id"]
-    
-    # Now simulate cap exceeded by pre-spending almost the full cap
+    """Selecting a product that would push the user over the monthly cap gives 409."""
     from datetime import datetime
-    now = datetime.utcnow().isoformat()
-    # Insert 490 spent
-    db_conn.execute("""
-        INSERT INTO orders (order_id, user_email, title, merchant, amount, currency, action, status, created_at, captured_at, demo)
-        VALUES (?, 'captest@test.com', 'Test', 'Shop', 490, 'USD', 'auto_pay', 'captured', ?, ?, 0)
-    """, ("CAP_EXISTING", now, now))
-    db_conn.commit()
-    
-    response = test_client.post(f"/api/runs/{run_id}/select", json={"product_id": product_id, "user_email": "captest@test.com"})
-    assert response.status_code == 409
-    assert "exceed monthly cap" in response.json()["detail"]
+    from app.db import MONTHLY_CAP
 
+    user = "captest@test.com"
+    run_response = test_client.post(
+        "/api/mock/run",
+        json={"text": "Buy a lamp under $50", "user_email": user},
+    )
+    run_id = run_response.json()["run_id"]
+
+    # The user already spent almost the whole cap this month
+    now = datetime.utcnow().isoformat()
+    db_conn.execute(
+        """
+        INSERT OR REPLACE INTO orders
+        (order_id, user_email, title, merchant, amount, currency, action,
+         status, created_at, captured_at, demo)
+        VALUES (?, ?, 'Earlier purchase', 'Shop', ?, 'USD', 'auto_pay',
+                'captured', ?, ?, 0)
+        """,
+        ("CAP_EXISTING", user, MONTHLY_CAP - 5, now, now),
+    )
+    db_conn.commit()
+
+    # Product 1 costs 20, so spent + 20 is over the cap
+    r = test_client.post(
+        f"/api/runs/{run_id}/select",
+        json={"product_id": "1", "user_email": user},
+    )
+    assert r.status_code == 409
+    assert "monthly cap" in r.json()["detail"].lower()
 
 def test_client_supplied_price_is_ignored(test_client):
     """Test that client-supplied price is ignored, server uses stored price."""
-    run_response = test_client.post("/api/mock/run", json={"text": "Buy a lamp under $50", "user_email": "pricetest@test.com"})
+    run_response = test_client.post("/api/mock/run", json={"text": "Buy a lamp under $50"})
     run_id = run_response.json()["run_id"]
     run_data = run_response.json()
-    
+
     # Find a non-rejected product
     passing_products = [c["product"] for c in run_data["candidates"] if c["decision"]["action"] != "reject"]
     if not passing_products:
         pytest.skip("No passing products in run")
-    
+
     product = passing_products[0]
     product_id = product["id"]
     stored_price = product["price"]
-    
+
     # The mock run already has an order for product_id "1", so create_order won't be called.
     # To test that the server uses the stored price (not client price), we verify
     # that the response order has the correct product data from the run.
     response = test_client.post(f"/api/runs/{run_id}/select", json={
-        "product_id": product_id, 
-        "user_email": "pricetest@test.com"
+        "product_id": product_id
     })
-    
+
     assert response.status_code == 200
     # The returned order should match the product from the run (not any client-supplied price)
     data = response.json()
@@ -113,35 +141,34 @@ def test_client_supplied_price_is_ignored(test_client):
 
 def test_idempotent_second_call_returns_same_order_id(test_client):
     """Test that second call to select for same run+product returns same order."""
-    run_response = test_client.post("/api/mock/run", json={"text": "Buy a lamp under $50", "user_email": "idemtest@test.com"})
+    run_response = test_client.post("/api/mock/run", json={"text": "Buy a lamp under $50"})
     run_id = run_response.json()["run_id"]
     run_data = run_response.json()
-    
+
     passing_products = [c["product"] for c in run_data["candidates"] if c["decision"]["action"] != "reject"]
     if not passing_products:
         pytest.skip("No passing products in run")
-    
+
     product_id = passing_products[0]["id"]
-    
+
     with patch("app.paypal.create_order", new_callable=AsyncMock) as mock_create:
         mock_create.return_value = {
             "id": "TEST_ORDER_123",
             "links": [{"rel": "payer-action", "href": "https://paypal.com/approve/TEST_ORDER_123"}]
         }
-        
+
         # First call
-        response1 = test_client.post(f"/api/runs/{run_id}/select", json={"product_id": product_id, "user_email": "idemtest@test.com"})
+        response1 = test_client.post(f"/api/runs/{run_id}/select", json={"product_id": product_id})
         assert response1.status_code == 200
         order_id_1 = response1.json()["order"]["id"]
-        
+
         # Second call - should return same order (idempotent)
-        response2 = test_client.post(f"/api/runs/{run_id}/select", json={"product_id": product_id, "user_email": "idemtest@test.com"})
+        response2 = test_client.post(f"/api/runs/{run_id}/select", json={"product_id": product_id})
         assert response2.status_code == 200
         order_id_2 = response2.json()["order"]["id"]
-        
-        # For now, since we create a new order each time, they'll be different
-        # This test documents the requirement for idempotency
-        # TODO: Implement proper idempotency by storing run_id+product_id in orders table
+
+        # With idempotency fix, both calls should return the same order
+        assert order_id_1 == order_id_2
 
 
 def test_run_store_persists_mandate_and_candidates(test_client):

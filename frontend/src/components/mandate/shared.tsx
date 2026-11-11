@@ -3,9 +3,9 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Star } from "lucide-react";
 import type { Action } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { formatMoney } from "@/lib/formatMoney";
 
-export const usd = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
+export const usd = formatMoney;
 
 export function CountUp({ value, className }: { value: number; className?: string }) {
   const reduce = useReducedMotion();
@@ -15,7 +15,7 @@ export function CountUp({ value, className }: { value: number; className?: strin
     const c = animate(0, value, { duration: 1.1, ease: "easeOut", onUpdate: setV });
     return () => c.stop();
   }, [value, reduce]);
-  return <span className={cn("tnum", className)}>{usd(v)}</span>;
+  return <span className={cn("tnum", className)}>{formatMoney(v)}</span>;
 }
 
 export const fadeUp = {

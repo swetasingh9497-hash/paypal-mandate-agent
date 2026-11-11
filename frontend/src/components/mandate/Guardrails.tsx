@@ -2,14 +2,14 @@ import { BadgeCheck, Clock, ShieldCheck, Star, Wallet, Zap } from "lucide-react"
 import * as Tooltip from "@radix-ui/react-tooltip";
 import type { Candidate, Mandate } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { usd } from "./shared";
+import { formatMoney } from "@/lib/formatMoney";
 
 export function Guardrails({ mandate }: { mandate: Mandate }) {
   const chips = [
-    { icon: Wallet, label: "Budget", value: usd(mandate.max_total) },
+    { icon: Wallet, label: "Budget", value: formatMoney(mandate.max_total) },
     mandate.min_rating != null && { icon: Star, label: "Min rating", value: `${mandate.min_rating}+` },
     mandate.max_delivery_days != null && { icon: Clock, label: "Delivery", value: `${mandate.max_delivery_days} days` },
-    { icon: Zap, label: "Auto-approve", value: `< ${usd(mandate.auto_approve_under)}` },
+    { icon: Zap, label: "Auto-approve", value: `< ${formatMoney(mandate.auto_approve_under)}` },
   ].filter(Boolean) as { icon: typeof Wallet; label: string; value: string }[];
 
   return (
@@ -17,7 +17,7 @@ export function Guardrails({ mandate }: { mandate: Mandate }) {
       <ShieldCheck className="absolute -right-6 -top-6 size-32 text-glass-border" aria-hidden />
       <div className="mb-4 flex items-center justify-between gap-3">
         <div>
-          <p className="text-xs uppercase tracking-widest text-muted-foreground">Mandate for</p>
+          <p className="text-xs uppercase tracking-widest text-muted-foreground">Budgie for</p>
           <p className="font-display text-xl font-semibold capitalize">{mandate.item}</p>
         </div>
         <BadgeCheck className="size-8 text-blue" aria-hidden />
@@ -54,7 +54,7 @@ export function PriceZone({ mandate, candidates, chosenId }: { mandate: Mandate;
               <Tooltip.Root key={c.product.id}>
                 <Tooltip.Trigger asChild>
                   <button
-                    aria-label={`${c.product.title}, ${usd(c.product.price)}`}
+                    aria-label={`${c.product.title}, ${formatMoney(c.product.price)}`}
                     className={cn(
                       "absolute top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-background",
                       isChosen ? "z-10 size-5 bg-foreground shadow-[0_0_20px_4px_var(--blue)]" : "size-3 bg-foreground/70",
@@ -64,7 +64,7 @@ export function PriceZone({ mandate, candidates, chosenId }: { mandate: Mandate;
                 </Tooltip.Trigger>
                 <Tooltip.Portal>
                   <Tooltip.Content sideOffset={8} className="z-50 rounded-lg border border-glass-border bg-popover px-3 py-1.5 text-xs">
-                    {c.product.title} · <span className="tnum">{usd(c.product.price)}</span>
+                    {c.product.title} · <span className="tnum">{formatMoney(c.product.price)}</span>
                   </Tooltip.Content>
                 </Tooltip.Portal>
               </Tooltip.Root>
@@ -72,14 +72,14 @@ export function PriceZone({ mandate, candidates, chosenId }: { mandate: Mandate;
           })}
           {chosen && (
             <span className="absolute -top-9 -translate-x-1/2 rounded-md bg-gradient-accent px-2 py-0.5 text-xs font-semibold tnum" style={{ left: pct(chosen.product.price) }}>
-              {usd(chosen.product.price)}
+              {formatMoney(chosen.product.price)}
             </span>
           )}
         </div>
         <div className="relative mt-3 text-xs text-muted-foreground tnum">
           <span className="absolute left-0">$0</span>
-          <span className="absolute -translate-x-1/2 text-ok" style={{ left: pct(mandate.auto_approve_under) }}>{usd(mandate.auto_approve_under)}</span>
-          <span className="absolute -translate-x-1/2 text-warn" style={{ left: pct(mandate.max_total) }}>{usd(mandate.max_total)}</span>
+          <span className="absolute -translate-x-1/2 text-ok" style={{ left: pct(mandate.auto_approve_under) }}>{formatMoney(mandate.auto_approve_under)}</span>
+          <span className="absolute -translate-x-1/2 text-warn" style={{ left: pct(mandate.max_total) }}>{formatMoney(mandate.max_total)}</span>
         </div>
       </div>
     </Tooltip.Provider>

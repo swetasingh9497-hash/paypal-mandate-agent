@@ -3,8 +3,9 @@ import { useState } from "react";
 import { CircleCheck, Lightbulb, Store, XCircle, CheckCircle, AlertTriangle, Loader2 } from "lucide-react";
 import type { Candidate, RunResponse } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { CountUp, DecisionBadge, Rating, actionStyles, usd } from "./shared";
-import { formatDetail } from "@/lib/formatDetail";
+import { CountUp, DecisionBadge, Rating, actionStyles } from "./shared";
+import { formatAudit } from "@/lib/formatAudit";
+import { formatMoney } from "@/lib/formatMoney";
 import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
@@ -17,7 +18,7 @@ function SafeAudit({ data }: { data: RunResponse }) {
         {data.audit.map((a, i) => (
           <div key={i} className="flex gap-3">
             <span className="w-20 shrink-0 text-blue">{a.step}</span>
-            <span className="break-words">{formatDetail(a.detail)}</span>
+            <span className="break-words">{formatAudit(a)}</span>
           </div>
         ))}
       </div>
@@ -39,7 +40,8 @@ interface SelectableCardProps {
   isSelected: boolean;
   onSelect: () => void;
   disabled?: boolean;
-  rejectReason?: string;
+  rejectReason?: string | undefined;
+  children?: React.ReactNode;
 }
 
 function SelectableCard({ candidate, isSelected, onSelect, disabled, rejectReason }: SelectableCardProps) {
@@ -72,7 +74,7 @@ function SelectableCard({ candidate, isSelected, onSelect, disabled, rejectReaso
       >
         <div className="flex items-start justify-between gap-3">
           <p className="font-medium leading-snug">{p.title}</p>
-          <span className="font-display font-semibold tnum">{usd(p.price)}</span>
+          <span className="font-display font-semibold tnum">{formatMoney(p.price)}</span>
         </div>
         <div className="mt-1 flex items-center gap-3 text-sm text-muted-foreground">
           <span>{p.merchant}</span>
@@ -96,18 +98,16 @@ function SelectableCard({ candidate, isSelected, onSelect, disabled, rejectReaso
   );
 }
 
-export function Recommendation({ 
-  data, 
-  onPay, 
-  selectedId, 
-  onSelect,
-  userEmail
-}: { 
-  data: RunResponse; 
+export function Recommendation({
+  data,
+  onPay,
+  selectedId,
+  onSelect
+}: {
+  data: RunResponse;
   onPay: (c: Candidate) => void;
   selectedId: string | null;
   onSelect: (c: Candidate) => void;
-  userEmail: string;
 }) {
   const chosen = data.candidates.find((c) => c.product.id === data.chosen_id);
   const selectedCandidate = data.candidates.find((c) => c.product.id === selectedId) ?? chosen;
@@ -123,29 +123,29 @@ export function Recommendation({
       }
       return;
     }
-    
+
     const action = candidate.decision.action;
-    
+
     if (action === "needs_approval") {
       setConfirmOpen(true);
       return;
     }
-    
+
     // auto_pay - proceed directly
     await executePayment(candidate);
   };
 
   const executePayment = async (candidate: Candidate) => {
-    if (!data.run_id || !userEmail) return;
+    if (!data.run_id) return;
     setPaying(true);
     setPayError(null);
     
     try {
       const { selectProduct } = await import("@/lib/api");
-      const result = await selectProduct(data.run_id, candidate.product.id, userEmail);
+      const result = await selectProduct(data.run_id, candidate.product.id);
       
       // Save selected candidate for receipt
-      sessionStorage.setItem("mandate:chosen", JSON.stringify(candidate));
+      sessionStorage.setItem("budgie:chosen", JSON.stringify(candidate));
       
       // Redirect to PayPal
       window.location.href = result.order.approve_url;
@@ -268,9 +268,9 @@ export function Recommendation({
                       Processing...
                     </span>
                   ) : selectedCandidate?.decision.action === "needs_approval" ? (
-                    `Review and approve ${usd(selectedCandidate.product.price)}`
+                    `Review and approve ${formatMoney(selectedCandidate.product.price)}`
                   ) : (
-                    `Pay ${usd(p.price)} with PayPal`
+                    `Pay ${formatMoney(p.price)} with PayPal`
                   )}
                 </Button>
               </DialogTrigger>
@@ -278,7 +278,7 @@ export function Recommendation({
                 <DialogHeader>
                   <DialogTitle>Approve payment</DialogTitle>
                   <DialogDescription>
-                    Approve ${usd(selectedCandidate?.product.price || p.price)} to {selectedCandidate?.product.merchant || p.merchant}?
+                    Approve ${formatMoney(selectedCandidate?.product.price || p.price)} to {selectedCandidate?.product.merchant || p.merchant}?
                   </DialogDescription>
                 </DialogHeader>
                 <ul className="mt-4 space-y-2 text-sm">
@@ -301,7 +301,7 @@ export function Recommendation({
           
           {selectedCandidate && selectedCandidate.decision.action === "auto_pay" && (
             <p className="text-xs text-muted-foreground text-center">
-              Within your ${usd(data.mandate.auto_approve_under)} auto-approve limit
+              Within your ${formatMoney(data.mandate.auto_approve_under)} auto-approve limit
             </p>
           )}
         </div>

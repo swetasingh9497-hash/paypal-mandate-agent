@@ -11,13 +11,14 @@ import { Guardrails, PriceZone } from "@/components/mandate/Guardrails";
 import { OtherCandidates, Recommendation, SafeAudit } from "@/components/mandate/Recommendation";
 import { Cancelled, Receipt, type ReceiptData } from "@/components/mandate/Receipt";
 import { Section, fadeUp } from "@/components/mandate/shared";
+import { formatAudit } from "@/lib/formatAudit";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Mandate — AI shopping agent with limits" },
+      { title: "Budgie — AI shopping agent with limits" },
       { name: "description", content: "An AI agent that buys within your limits and pays with PayPal." },
-      { property: "og:title", content: "Mandate — AI shopping agent with limits" },
+      { property: "og:title", content: "Budgie — AI shopping agent with limits" },
       { property: "og:description", content: "An AI agent that buys within your limits and pays with PayPal." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -95,12 +96,18 @@ function MandateApp() {
     setStatus("running");
     try {
       if (!session) return;
-      const res = await runMandate(q, demo, session.email);
+      const res = await runMandate(q, demo);
       setData(res);
       setSelectedId(res.chosen_id);
       setStatus("done");
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("Session expired")) {
+        setError("Session expired. Sign in again.");
+        // Sign out will be handled by the auth context
+      } else {
+        setError(msg);
+      }
       setStatus("error");
     }
   }
@@ -124,15 +131,20 @@ function MandateApp() {
     }
 
     try {
-      const result = await selectProduct(data.run_id, candidate.product.id, session?.email || "");
-      
+      const result = await selectProduct(data.run_id, candidate.product.id);
+
       // Save selected candidate for receipt
       sessionStorage.setItem(CHOSEN_KEY, JSON.stringify(candidate));
-      
+
       // Redirect to PayPal
       window.location.href = result.order.approve_url;
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Payment failed");
+      const msg = err instanceof Error ? err.message : "Payment failed";
+      if (msg.includes("Session expired")) {
+        setError("Session expired. Sign in again.");
+      } else {
+        setError(msg);
+      }
     }
   }
 
@@ -147,7 +159,7 @@ function MandateApp() {
   }
 
   const auditLines = data?.audit?.length
-    ? data.audit.map((a) => `[${a.step}] ${a.detail}`)
+    ? data.audit.map((a) => formatAudit(a))
     : ["parse", "search", "rules", "decide"];
 
   const hasRun = status !== "idle";
@@ -178,7 +190,7 @@ function MandateApp() {
           <>
             <motion.section variants={fadeUp} initial="hidden" animate="show" className="space-y-6 text-center">
               <h1 className="font-display text-4xl font-bold leading-tight tracking-tight sm:text-6xl">
-                Tell your agent what to buy.
+                Tell Budgie what to buy.
                 <br />
                 <span className="text-gradient">It stays inside your limits.</span>
               </h1>
@@ -189,7 +201,7 @@ function MandateApp() {
                     value={text}
                     onChange={(e) => setText(e.target.value)}
                     placeholder="Headphones under $200, 4.5+"
-                    aria-label="Shopping mandate"
+                    aria-label="Shopping budgie"
                     className="min-w-0 flex-1 bg-transparent py-2.5 text-base outline-none placeholder:text-muted-foreground"
                   />
                   <button type="submit" disabled={status === "running"} className="flex items-center gap-2 rounded-full bg-gradient-accent px-4 py-2.5 font-semibold disabled:opacity-70 sm:px-5">
@@ -225,12 +237,11 @@ function MandateApp() {
                         <PriceZone mandate={data.mandate} candidates={data.candidates} chosenId={data.chosen_id} />
                       </Section>
                       <Section title="Recommended purchase" icon={<Sparkles className="size-4" />} i={2}>
-                        <Recommendation 
-                          data={data} 
+                        <Recommendation
+                          data={data}
                           onPay={handlePay}
                           selectedId={selectedId}
                           onSelect={handleSelect}
-                          userEmail={session?.email || ""}
                         />
                       </Section>
                       <Section title="Other candidates" icon={<Package className="size-4" />} i={3}>
@@ -262,7 +273,7 @@ function MandateApp() {
       </main>
 
       <footer className="border-t border-glass-border py-6 text-center text-sm text-muted-foreground">
-        The LLM proposes. Rules decide.
+        AI proposes. Code decides.
       </footer>
     </div>
   );

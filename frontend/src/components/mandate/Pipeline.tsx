@@ -1,8 +1,7 @@
 import { motion } from "framer-motion";
-import { Check, FileText, Gavel, Scale, Search, Terminal, X } from "lucide-react";
+import { Check, FileText, Gavel, Scale, Search, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
-import { formatDetail } from "@/lib/formatDetail";
 
 const NODES = [
   { key: "Parse", icon: FileText },
@@ -12,22 +11,6 @@ const NODES = [
 ];
 
 export type PipelineStatus = "idle" | "running" | "done" | "error";
-
-function TerminalLine({ line }: { line: string }) {
-  try {
-    return (
-      <motion.p initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} className="break-words">
-        <span className="text-ok">{">"}</span> {formatDetail(line)}
-      </motion.p>
-    );
-  } catch {
-    return (
-      <motion.p initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} className="break-words text-bad">
-        <span className="text-ok">{">"}</span> Could not display this entry
-      </motion.p>
-    );
-  }
-}
 
 export function Pipeline({ status, lines }: { status: PipelineStatus; lines: string[] }) {
   const [step, setStep] = useState(0);
@@ -83,20 +66,6 @@ export function Pipeline({ status, lines }: { status: PipelineStatus; lines: str
             );
           })}
         </ol>
-      </div>
-      <div className="rounded-xl border border-glass-border bg-background/70 p-4 font-mono text-xs sm:text-sm">
-        <div className="mb-2 flex items-center gap-2 text-muted-foreground">
-          <Terminal className="size-3.5" aria-hidden /> agent.log
-        </div>
-        <div className="min-h-24 space-y-1" aria-live="polite">
-          {status === "idle" && <p className="text-muted-foreground">$ awaiting mandate_</p>}
-          {status === "running" && <p className="text-blue">$ running {NODES[Math.min(step, 3)]?.key.toLowerCase()}...</p>}
-          {status === "error" && <p className="text-bad">$ run failed</p>}
-          {status === "done" &&
-            lines.slice(0, typed).map((l, i) => (
-              <TerminalLine key={i} line={l} />
-            ))}
-        </div>
       </div>
     </div>
   );

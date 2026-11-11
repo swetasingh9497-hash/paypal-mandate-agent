@@ -3,32 +3,38 @@ from .search import search_products
 from .rules import evaluate
 from .paypal import create_order
 from .ranker import rank_products
-from .db import insert_order, get_monthly_spent, MONTHLY_CAP, insert_run
+from .db import insert_order, get_monthly_spent, MONTHLY_CAP, insert_run, update_run_payload, DEMO_EMAIL
 import uuid
 import logging
+import re
 
 # In-memory order store: order_id -> {product_id, title, merchant, amount, currency, action, captured: false}
 # Kept for backward compatibility with capture endpoint
 ORDERS = {}
 
-def pick_best_candidate(passing: list[dict]) -> dict | None:
-    """
-    Choose best non-reject candidate:
-    - prefer auto_pay over needs_approval
-    - then rating desc (None last)
-    - then price asc
-    """
+_STOP = {"under", "below", "over", "above", "rating", "with", "for", "and", "the",
+         "buy", "autopay", "auto", "approve", "pay", "less", "than", "max", "min"}
+
+def _query_tokens(text: str) -> set[str]:
+    return {t for t in re.findall(r"[a-z]+", text.lower()) if len(t) > 2 and t not in _STOP}
+
+def pick_best_candidate(passing: list[dict], text: str = "") -> dict | None:
+    """Keyword match with the user's text first, then auto_pay, rating desc, price asc."""
     if not passing:
         return None
-    def sort_key(c):
-        action_prio = 0 if c["decision"].action == "auto_pay" else 1
-        rating = c["product"].rating if c["product"].rating is not None else -1
-        price = c["product"].price
-        return (action_prio, -rating, price)
-    passing_sorted = sorted(passing, key=sort_key)
-    return passing_sorted[0]
+    tokens = _query_tokens(text)
 
-async def run_pipeline(text: str, user_email: str = "demo@mandate.app") -> dict:
+    def sort_key(c):
+        p = c["product"]
+        title = (p.title or "").lower()
+        relevance = sum(t in title for t in tokens)
+        action_prio = 0 if c["decision"].action == "auto_pay" else 1
+        rating = p.rating if p.rating is not None else -1
+        return (-relevance, action_prio, -rating, p.price)
+
+    return sorted(passing, key=sort_key)[0]
+
+async def run_pipeline(text: str, user_email: str = DEMO_EMAIL) -> dict:
     mandate = parse_mandate(text)
     products = await search_products(mandate)
 
@@ -48,11 +54,10 @@ async def run_pipeline(text: str, user_email: str = "demo@mandate.app") -> dict:
     passing = [c for c in candidates if c["decision"].action != "reject"]
 
     # Rank products (LLM or fallback)
-    ranker_result = await rank_products(passing, mandate)
+    ranker_result = await rank_products(passing, mandate, user_query=text)
     chosen_id = ranker_result.get("chosen_id") if ranker_result else None
     ranker_summary = ranker_result.get("summary") if ranker_result else None
     ranker_notes = ranker_result.get("notes") if ranker_result else {}
-    ranker_choice_reason = f"LLM chose {chosen_id}: {ranker_summary}" if chosen_id else "No passing products"
 
     chosen = None
     if chosen_id:
@@ -60,9 +65,9 @@ async def run_pipeline(text: str, user_email: str = "demo@mandate.app") -> dict:
 
     # Fallback to deterministic pick if no LLM choice
     if not chosen:
-        chosen = pick_best_candidate(passing)
+        chosen = pick_best_candidate(passing, text)
         if chosen:
-            ranker_summary = "Best match by rules"
+            ranker_summary = "Fallback pick (AI ranker unavailable): closest keyword match, then rating and price"
             ranker_notes = {}
             chosen_id = chosen["product"].id
 
@@ -76,7 +81,7 @@ async def run_pipeline(text: str, user_email: str = "demo@mandate.app") -> dict:
                 (l["href"] for l in o["links"] if l["rel"] in ("payer-action", "approve")),
                 None,
             )
-            order = {"id": o["id"], "approve_url": approve_url}
+            order = {"id": o["id"], "approve_url": approve_url, "product_id": p.id}
             # Store in DB for capture lock and spending history
             insert_order(
                 order_id=o["id"],
@@ -86,7 +91,7 @@ async def run_pipeline(text: str, user_email: str = "demo@mandate.app") -> dict:
                 amount=p.price,
                 currency=p.currency,
                 action=chosen["decision"].action,
-                demo=1 if user_email == "demo@mandate.app" else 0,
+                demo=1 if user_email == DEMO_EMAIL else 0,
             )
             # Also keep in ORDERS for backward compatibility
             ORDERS[o["id"]] = {

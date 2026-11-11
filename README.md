@@ -1,6 +1,6 @@
-# Mandate Agent
+# Budgie
 
-> An AI shopping agent that buys on your behalf, but only inside the spending rules you set. Payments run through PayPal.
+> Budgie is a guardrailed AI shopping agent: you set limits in plain language, the LLM proposes, plain Python rules decide, PayPal moves the money.
 
 ## The problem
 
@@ -8,7 +8,7 @@ AI agents can already search and shop, but people don't trust them with their mo
 
 ## Our solution
 
-You give the agent a **mandate** in plain language, for example:
+You give Budgie a **mandate** in plain language, for example:
 
 > "A desk lamp under $60, rated 4 stars or above, delivered within a week."
 
@@ -35,8 +35,8 @@ Mandate (text)
 
 ## Why PayPal and AI both matter
 
-- **AI:** <what the LLM does in your build, e.g. mandate parsing, ranking, explanations>
-- **PayPal:** <what you use, e.g. Orders API to create and capture payments, buyer approval flow>
+- **AI:** the LLM (a) parses the plain-language mandate into validated JSON, and (b) ranks only the products that already passed the rules and explains the pick. It never decides or moves money.
+- **PayPal:** Orders API to create and capture payments, buyer approval flow
 
 Neither works alone: without AI there is no agent, and without PayPal the agent cannot safely complete a purchase.
 
@@ -47,26 +47,25 @@ Neither works alone: without AI there is no agent, and without PayPal the agent 
 - Safe defaults: missing data means reject
 - Human approval flow for purchases above the auto-approve limit
 - Full audit trail: why each product was chosen or rejected
-- <add only what is actually built>
 
 ## Safety design
 
 - The rules engine is plain code with unit tests, not an LLM.
-- Product titles and descriptions are treated as untrusted text. <describe your prompt-injection defence once built>
+- Product titles and descriptions are treated as untrusted text. Input sanitization and grounded parsing reject injected instructions.
 - Missing data (no rating, no delivery estimate) is rejected, never assumed fine.
 - Secrets live in `.env` and are never committed.
 
 ## Tech stack
 
-Python, FastAPI, Pydantic, httpx, <LLM provider>, <product data API>, React, PayPal Orders API (Sandbox), <deployment platform>
+Python, FastAPI, Pydantic, httpx, Google Gemini, Channel3 (product search), React, PayPal Orders API (Sandbox), Railway/Render
 
 ## Getting started
 
 **Prerequisites:** Python 3.11+, Node.js (for the frontend), a PayPal Developer account.
 
 ```bash
-git clone https://github.com/<your-username>/mandate-agent.git
-cd mandate-agent
+git clone <repo-url>
+cd budgie
 python -m venv .venv
 # Windows: .venv\Scripts\activate   |  Mac/Linux: source .venv/bin/activate
 pip install -r requirements.txt
@@ -78,9 +77,9 @@ Fill in `.env`:
 ```
 PAYPAL_CLIENT_ID=
 PAYPAL_SECRET=
-ANTHROPIC_API_KEY=
+GEMINI_API_KEY=
 CHANNEL3_API_KEY=
-LLM_MODEL=
+LLM_MODEL=gemini-3.5-flash-lite
 ```
 
 Run the backend:
@@ -95,7 +94,7 @@ Run the tests:
 pytest -q
 ```
 
-Frontend: <add steps once the frontend exists>
+Frontend: `cd frontend && bun install && bun run dev`
 
 > **Note:** This project uses the PayPal **Sandbox**. No real money moves. To test checkout, use a Sandbox *Personal* (buyer) account created with country set to United States.
 
@@ -106,14 +105,14 @@ Frontend: <add steps once the frontend exists>
 
 ## Team
 
-- <Your name> - <role, e.g. agent core and AI>
-- <Teammate name> - <role, e.g. frontend and payment flow>
+- (Add team members here)
 
 ## Limitations and roadmap
 
 - Currently Sandbox only
-- <honest list of what is missing or simplified>
-- Next: <2 or 3 realistic ideas>
+- No multi-currency support; all amounts normalized to USD
+- Product search is demo-only (no live catalog integration)
+- Next: real product API, multi-currency, scheduled mandates
 
 ## License
 

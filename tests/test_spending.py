@@ -2,7 +2,9 @@ import os
 import tempfile
 import sqlite3
 from datetime import datetime, timedelta
+from unittest.mock import patch
 from fastapi.testclient import TestClient
+import pytest
 
 # Set test database path before importing app
 test_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
@@ -12,7 +14,7 @@ os.environ["MONTHLY_CAP"] = "500"
 os.environ["SEED_DEMO"] = "0"
 
 from app.main import app
-from app.db import insert_order, get_monthly_spent, get_spending_data, close_db, get_connection, set_test_connection, SEED_DEMO
+from app.db import insert_order, get_monthly_spent, get_spending_data, close_db, get_connection, set_test_connection, SEED_DEMO, MONTHLY_CAP
 
 client = TestClient(app)
 
@@ -39,6 +41,17 @@ def teardown_module():
         os.unlink(test_db.name)
     except Exception:
         pass
+
+
+@pytest.fixture(autouse=True)
+def clear_orders():
+    """Clear test data before each test."""
+    conn = get_test_conn()
+    conn.execute("DELETE FROM orders")
+    conn.commit()
+    yield
+    conn.execute("DELETE FROM orders")
+    conn.commit()
 
 
 def test_cap_boundary_passes():
@@ -71,9 +84,6 @@ def test_cap_exceeded_rejects():
 def test_spending_zero_fill_weeks():
     """Test weekly aggregation zero-fills gaps"""
     conn = get_test_conn()
-    conn.execute("DELETE FROM orders")
-    conn.commit()
-
     user = "test@user.com"
     now = datetime.utcnow()
 
@@ -107,9 +117,6 @@ def test_spending_zero_fill_weeks():
 def test_spending_zero_fill_months():
     """Test monthly aggregation zero-fills gaps"""
     conn = get_test_conn()
-    conn.execute("DELETE FROM orders")
-    conn.commit()
-
     user = "test2@user.com"
     now = datetime.utcnow()
 
@@ -141,9 +148,6 @@ def test_spending_zero_fill_months():
 def test_user_isolation():
     """Test that one user's orders never appear for another"""
     conn = get_test_conn()
-    conn.execute("DELETE FROM orders")
-    conn.commit()
-
     insert_order("ORD_A", "userA@test.com", "Item A", "Shop", 100, "USD", "auto_pay")
     insert_order("ORD_B", "userB@test.com", "Item B", "Shop", 200, "USD", "auto_pay")
     # Mark as captured
@@ -171,9 +175,6 @@ def test_capture_unknown_order_returns_404():
 def test_capture_already_captured_returns_409():
     """Test capture of already captured order returns 409"""
     conn = get_test_conn()
-    conn.execute("DELETE FROM orders")
-    conn.commit()
-
     insert_order("ORD_CAPTURED", "user@test.com", "Item", "Shop", 50, "USD", "auto_pay")
     conn.execute("UPDATE orders SET status = 'captured', captured_at = ? WHERE order_id = ?", (datetime.utcnow().isoformat(), "ORD_CAPTURED"))
     conn.commit()
@@ -186,15 +187,13 @@ def test_capture_already_captured_returns_409():
 def test_spending_api_structure():
     """Test /api/spending returns correct structure"""
     conn = get_test_conn()
-    conn.execute("DELETE FROM orders")
-    conn.commit()
-
     user = "api@test.com"
+
     insert_order("ORD_API", user, "Test Item", "Test Shop", 75, "USD", "auto_pay")
     conn.execute("UPDATE orders SET status = 'captured', captured_at = ? WHERE order_id = ?", (datetime.utcnow().isoformat(), "ORD_API"))
     conn.commit()
+    response = client.get("/api/spending", params={"user": user})
 
-    response = client.get(f"/api/spending?user={user}")
     assert response.status_code == 200
 
     data = response.json()
@@ -216,18 +215,13 @@ def test_spending_api_structure():
     assert data["orders"][0]["title"] == "Test Item"
 
 
-def test_seed_demo_on_demand_for_user_with_no_orders():
+def test_seed_demo_on_demand_for_user_with_no_orders(monkeypatch):
     """Test that SEED_DEMO=1 seeds ~14 demo orders for a user with zero captured orders."""
-    # Enable SEED_DEMO for this test
-    os.environ["SEED_DEMO"] = "1"
-    # Need to re-initialize the app/db with the new setting
-    from app.db import close_db, get_connection
-    close_db()
-    # Re-import to pick up the new env var
-    import importlib
-    import app.db
-    importlib.reload(app.db)
-    
+    monkeypatch.setenv("SEED_DEMO", "1")
+    # Reset the module-level SEED_DEMO flag
+    import app.db as db_module
+    db_module.SEED_DEMO = True
+
     conn = get_test_conn()
     conn.execute("DELETE FROM orders")
     conn.commit()
@@ -235,10 +229,11 @@ def test_seed_demo_on_demand_for_user_with_no_orders():
     user = "seeded@user.com"
     # User has NO captured orders
     data = get_spending_data(user)
-    
+
     # Should now have demo orders
     assert data["kpis"]["order_count"] >= 14
     assert data["kpis"]["month_total"] > 0
+    assert data["kpis"]["month_total"] <= MONTHLY_CAP
     # All seeded orders should have demo=1
     for order in data["orders"]:
         assert order["demo"] == 1
@@ -246,20 +241,14 @@ def test_seed_demo_on_demand_for_user_with_no_orders():
     actions = [o["action"] for o in data["orders"]]
     assert "auto_pay" in actions
     assert "needs_approval" in actions
-    
-    os.environ["SEED_DEMO"] = "0"
-    close_db()
 
 
-def test_seed_demo_skips_user_with_existing_orders():
+def test_seed_demo_skips_user_with_existing_orders(monkeypatch):
     """Test that SEED_DEMO=1 does NOT seed for a user who already has captured orders."""
-    os.environ["SEED_DEMO"] = "1"
-    from app.db import close_db
-    close_db()
-    import importlib
-    import app.db
-    importlib.reload(app.db)
-    
+    monkeypatch.setenv("SEED_DEMO", "1")
+    import app.db as db_module
+    db_module.SEED_DEMO = True
+
     conn = get_test_conn()
     conn.execute("DELETE FROM orders")
     conn.commit()
@@ -271,13 +260,47 @@ def test_seed_demo_skips_user_with_existing_orders():
     conn.commit()
 
     data = get_spending_data(user)
-    
+
     # Should NOT have demo orders (only the real one)
     assert data["kpis"]["order_count"] == 1
     assert data["kpis"]["month_total"] == 100
     # The order should not be demo
     assert data["orders"][0]["demo"] == 0
     assert data["orders"][0]["order_id"] == "ORD_REAL"
-    
-    os.environ["SEED_DEMO"] = "0"
-    close_db()
+
+
+def test_seed_demo_current_month_on_2nd_of_month(monkeypatch):
+    """Test that seeding on the 2nd of a month still creates orders in current month."""
+    monkeypatch.setenv("SEED_DEMO", "1")
+    import app.db as db_module
+    db_module.SEED_DEMO = True
+
+    # Freeze "today" to the 2nd day of the month at 10:00 UTC
+    frozen_now = datetime(2026, 3, 2, 10, 0, 0)
+
+    conn = get_test_conn()
+    conn.execute("DELETE FROM orders")
+    conn.commit()
+
+    user = "frozen@user.com"
+    # Call seeder directly with frozen time
+    db_module.seed_demo_for_user(conn, user, now=frozen_now)
+    # Pass frozen_now to get_spending_data so month filter uses the same time
+    data = get_spending_data(user, now=frozen_now)
+
+    # Should have demo orders with some in current month (March 2026)
+    assert data["kpis"]["order_count"] >= 14
+    assert data["kpis"]["month_total"] > 0
+    assert data["kpis"]["month_total"] <= MONTHLY_CAP
+    # Verify at least 3 orders have captured_at in March 2026 (between 1st and now)
+    march_orders = [o for o in data["orders"] if o["captured_at"].startswith("2026-03")]
+    assert len(march_orders) >= 3
+    # All march orders should be between 1st and now (not future)
+    for o in march_orders:
+        captured = datetime.fromisoformat(o["captured_at"])
+        assert captured >= datetime(2026, 3, 1)
+        assert captured <= frozen_now
+    # No order in the future
+    for o in data["orders"]:
+        captured = datetime.fromisoformat(o["captured_at"])
+        assert captured <= frozen_now

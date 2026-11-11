@@ -6,14 +6,18 @@ import time
 import logging
 from collections import defaultdict, deque
 import httpx
-from fastapi import FastAPI, HTTPException, Query, Body, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
 from .paypal import capture_order, create_order
 from .pipeline import run_pipeline, ORDERS
-from .db import get_order, capture_order_db, get_spending_data, get_run, insert_order, insert_run, get_monthly_spent, MONTHLY_CAP
+from .db import (
+    get_order, capture_order_db, get_spending_data, get_run, insert_order,
+    insert_run, update_run_payload, get_monthly_spent, MONTHLY_CAP, DEMO_EMAIL,
+)
+from .auth import router as auth_router, resolve_user
 
 # Environment configuration with safe defaults
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
@@ -23,7 +27,7 @@ BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
 # Startup logging (no secrets)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-logger.info("Starting Mandate API")
+logger.info("Starting Budgie API")
 logger.info("CORS allowed origins: %s", CORS_ORIGINS)
 logger.info("Frontend URL: %s", FRONTEND_URL)
 logger.info("Backend URL: %s", BACKEND_URL)
@@ -31,7 +35,9 @@ logger.info("Backend URL: %s", BACKEND_URL)
 # --- simple per-IP rate limit (memory mein, restart par reset hota hai) ---
 _hits = defaultdict(deque)
 
-def rate_limit(request: Request, limit: int = 5, window: int = 60):
+RATE_LIMIT_PER_MIN = int(os.getenv("RATE_LIMIT_PER_MIN", "20"))
+
+def rate_limit(request: Request, limit: int = RATE_LIMIT_PER_MIN, window: int = 60):
     # Hosting platform ke peeche asli IP X-Forwarded-For mein aata hai
     fwd = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
     ip = fwd or (request.client.host if request.client else "unknown")
@@ -43,7 +49,8 @@ def rate_limit(request: Request, limit: int = 5, window: int = 60):
         raise HTTPException(status_code=429, detail="Too many requests. Please wait a minute.")
     q.append(now)
 
-app = FastAPI(title="Mandate")
+app = FastAPI(title="Budgie")
+app.include_router(auth_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -54,11 +61,11 @@ app.add_middleware(
 
 class RunRequest(BaseModel):
     text: str = Field(min_length=3, max_length=500)
-    user_email: str = "demo@mandate.app"
+    user_email: str = DEMO_EMAIL
 
 class SelectRequest(BaseModel):
     product_id: str
-    user_email: str
+    user_email: str | None = None  # only used when no login token is sent
 
 @app.get("/api/health")
 def health():
@@ -67,20 +74,23 @@ def health():
 @app.post("/api/run")
 async def run(req: RunRequest, request: Request):
     rate_limit(request)
+    # Resolve the user BEFORE the try block so a bad token stays a 401
+    user = resolve_user(request, req.user_email)
     try:
-        return await run_pipeline(req.text, req.user_email)
+        return await run_pipeline(req.text, user)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="The AI service is not available right now. Please try again.")
     except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=502, detail=f"PayPal error: {e.response.text}")
-    except Exception as e:
+        logger.warning("Upstream HTTP error: %s", e.response.status_code)
+        raise HTTPException(status_code=502, detail="Could not create the payment order. Please try again.")
+    except Exception:
         logging.exception("Unhandled error in /api/run")
-        raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
+        raise HTTPException(status_code=503, detail="The AI service is not available right now. Please try again.")
 
 @app.post("/api/mock/run")
-async def run_mock(req: RunRequest):
+async def run_mock(req: RunRequest, request: Request):
     # Stable nakli data, frontend development ke liye
     mock_payload = {
         "mandate": {"item": "desk lamp", "max_total": 60, "currency": "USD",
@@ -113,23 +123,28 @@ async def run_mock(req: RunRequest):
         "monthly_cap": 500,
         "month_spent": 0,
     }
-    
+
     # Store mock run in DB so select endpoint can find it
     run_id = "mock_run_id"
-    insert_run(run_id, req.user_email, mock_payload)
-    
+    insert_run(run_id, resolve_user(request, req.user_email), mock_payload)
+
     return {
         "run_id": run_id,
         **mock_payload,
     }
 
 @app.post("/api/orders/{order_id}/capture")
-async def capture(order_id: str):
+async def capture(order_id: str, request: Request):
     order_info = get_order(order_id)
     if not order_info:
         order_info = ORDERS.get(order_id)
         if not order_info:
             raise HTTPException(status_code=404, detail="Order not found")
+
+    # Only the owner of the order may capture it (checked when we know the owner)
+    owner = order_info.get("user_email")
+    if owner and resolve_user(request, owner) != str(owner).strip().lower():
+        raise HTTPException(status_code=403, detail="This order belongs to another user")
 
     if order_info.get("action") == "reject":
         raise HTTPException(status_code=409, detail="Order was rejected, cannot capture")
@@ -139,7 +154,11 @@ async def capture(order_id: str):
     try:
         result = await capture_order(order_id)
     except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=400, detail=e.response.text)
+        logger.warning("PayPal HTTP error: %s", e.response.status_code)
+        raise HTTPException(status_code=502, detail="Payment could not be captured. Please try again.")
+    except Exception:
+        logging.exception("Capture failed")
+        raise HTTPException(status_code=502, detail="Payment could not be captured. Please try again.")
 
     capture_id = None
     amount = None
@@ -183,7 +202,9 @@ async def capture(order_id: str):
     }
 
 @app.post("/api/runs/{run_id}/select")
-async def select_product(run_id: str, req: SelectRequest):
+async def select_product(run_id: str, req: SelectRequest, request: Request):
+    rate_limit(request)
+
     # 1. Fetch run
     run = get_run(run_id)
     if not run:
@@ -192,8 +213,8 @@ async def select_product(run_id: str, req: SelectRequest):
     payload = run["payload"]
     user_email = run["user_email"]
 
-    # 2. Check user_email matches
-    if req.user_email != user_email:
+    # 2. Only the user who made the run may select from it
+    if resolve_user(request, req.user_email) != str(user_email).strip().lower():
         raise HTTPException(status_code=403, detail="User mismatch")
 
     # 3. Find product in candidates
@@ -223,7 +244,6 @@ async def select_product(run_id: str, req: SelectRequest):
     # 6. Check if order already exists for this run_id + product_id
     existing_order = payload.get("order")
     if existing_order and existing_order.get("product_id") == req.product_id:
-        # Return existing order
         return {
             "order": existing_order,
             "product": product,
@@ -238,11 +258,14 @@ async def select_product(run_id: str, req: SelectRequest):
             None,
         )
         order = {"id": o["id"], "approve_url": approve_url, "product_id": req.product_id}
-    except Exception as e:
+    except httpx.HTTPStatusError as e:
+        logger.warning("PayPal HTTP error: %s", e.response.status_code)
+        raise HTTPException(status_code=502, detail="Could not create the payment order. Please try again.")
+    except Exception:
         logging.exception("PayPal order creation failed in select")
-        raise HTTPException(status_code=502, detail="Could not create payment order")
+        raise HTTPException(status_code=502, detail="Could not create the payment order. Please try again.")
 
-    # 8. Insert order with status "created" and link to run
+    # 8. Insert order with status "created"
     insert_order(
         order_id=o["id"],
         user_email=user_email,
@@ -251,10 +274,14 @@ async def select_product(run_id: str, req: SelectRequest):
         amount=price,
         currency=currency,
         action=action,
-        demo=1 if user_email == "demo@mandate.app" else 0,
+        demo=1 if user_email == DEMO_EMAIL else 0,
     )
 
-    # 9. Return response
+    # 9. Save the order into the run payload (so a second select is idempotent)
+    payload["order"] = order
+    update_run_payload(run_id, payload)
+
+    # 10. Return response
     return {
         "order": order,
         "product": product,
@@ -270,5 +297,5 @@ def paypal_cancel():
     return RedirectResponse(f"{FRONTEND_URL}/?cancelled=1")
 
 @app.get("/api/spending")
-async def spending(user: str = Query(default="demo@mandate.app")):
-    return get_spending_data(user)
+async def spending(request: Request, user: str | None = Query(default=None)):
+    return get_spending_data(resolve_user(request, user))

@@ -1,29 +1,55 @@
-# Welcome to your Lovable project
+# Budgie
 
-This project was built with [Lovable](https://lovable.dev).
+AI proposes. Code decides.
 
-## Build with Lovable
+A frontend for an AI shopping agent that buys within your limits and pays with PayPal.
 
-Open your project in the [Lovable editor](https://lovable.dev) and keep building.
+## Tech Stack
 
-- **Ship faster**: describe what you want to build and Lovable handles the code.
-- **Stay in sync**: connect the project to GitHub and every change made in Lovable is committed straight to your repository.
-- **Full ownership**: this code is yours. Push to your repository and your changes sync back into Lovable, ready for your next prompt.
+- TanStack Start (React + SSR)
+- TypeScript
+- React 18
+- Tailwind CSS
+- TanStack Router
+- TanStack Query
+- Framer Motion
 
 ## Development
 
-Prefer working locally? You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
-
 ```sh
-git clone <this-repository-url>
-cd <repository-name>
-npm i
-npm run dev
+# Install dependencies
+bun install
+
+# Start dev server
+bun run dev
+
+# Build for production
+bun run build
 ```
 
-## Built with
+## Structure
 
-- TanStack Start
-- TypeScript
-- React
-- Tailwind CSS
+```
+src/
+├── components/
+│   ├── mandate/       # Budgie-specific components
+│   └── ui/            # Reusable UI components (shadcn-style)
+├── lib/
+│   ├── api.ts         # API client (demo + live)
+│   ├── auth.ts        # Local auth provider
+│   ├── spending.ts    # Spending normalization & types
+│   └── mock*.ts       # Mock data for demo mode
+├── routes/
+│   ├── __root.tsx     # Root layout, head meta, providers
+│   ├── index.tsx      # Home page (mandate input + results)
+│   └── spending.tsx   # Spending history page
+└── styles.css         # Global styles & Tailwind
+```
+
+## Demo Mode
+
+Toggle "Demo data" in the header to explore with a sandbox account (`demo@budgie.app`). No network calls are made in demo mode.
+
+## License
+
+MIT

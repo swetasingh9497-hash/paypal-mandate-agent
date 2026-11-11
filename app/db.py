@@ -10,7 +10,19 @@ import uuid
 DB_PATH = os.getenv("DB_PATH", "./orders.db")
 MONTHLY_CAP = float(os.getenv("MONTHLY_CAP", "500"))
 SEED_DEMO = os.getenv("SEED_DEMO", "0") == "1"
-DEMO_EMAIL = "demo@mandate.app"
+DEMO_EMAIL = "demo@budgie.app"
+
+# Session storage for local token-based auth (used by main.py for /api/spending)
+_session: Optional[Dict[str, Any]] = None
+
+def read_session() -> Optional[Dict[str, Any]]:
+    """Read the current session from memory (set by auth flow)."""
+    return _session
+
+def set_session(session_data: Optional[Dict[str, Any]]) -> None:
+    """Set the current session in memory."""
+    global _session
+    _session = session_data
 
 _conn: Optional[sqlite3.Connection] = None
 _test_conn: Optional[sqlite3.Connection] = None
@@ -97,8 +109,19 @@ def init_db(conn: sqlite3.Connection) -> None:
     """)
 
 
-def seed_demo_for_user(conn: sqlite3.Connection, user_email: str) -> None:
-    """Seed ~14 captured demo orders for a specific user if they have none."""
+def seed_demo_for_user(
+    conn: sqlite3.Connection,
+    user_email: str,
+    now: Optional[datetime] = None,
+) -> None:
+    """Seed ~14 captured demo orders for a specific user if they have none.
+    Guarantees at least 3 orders in the current calendar month (1st of month to now),
+    totaling ~240 USD (scaled to stay <= MONTHLY_CAP), with the rest spread over
+    the previous 8 weeks and 6 months so both charts have data.
+    """
+    if now is None:
+        now = datetime.utcnow()
+
     cur = conn.cursor()
     # Check if user already has ANY captured orders (demo or real)
     cur.execute("SELECT COUNT(*) FROM orders WHERE user_email = ? AND status = 'captured'", (user_email,))
@@ -108,37 +131,93 @@ def seed_demo_for_user(conn: sqlite3.Connection, user_email: str) -> None:
     import random
     from datetime import timedelta
 
-    base_date = datetime.utcnow()
-    products = [
+    month_start = datetime(now.year, now.month, 1)
+    month_elapsed = (now - month_start).total_seconds()
+    monthly_cap = MONTHLY_CAP
+
+    # --- Current month orders: at least 3, totaling ~240 USD (capped to MONTHLY_CAP) ---
+    # Use fractions of elapsed time so they work even when only hours into the month
+    fractions = [0.1, 0.3, 0.5, 0.7, 0.9]
+    base_products = [
         ("Basic LED Lamp", "ShopA", 20, "auto_pay"),
         ("Wireless Mouse", "ShopB", 35, "needs_approval"),
-        ("Mechanical Keyboard", "ShopC", 85, "needs_approval"),
         ("USB-C Hub", "ShopD", 45, "auto_pay"),
-        ("Monitor Stand", "ShopE", 55, "needs_approval"),
         ("Desk Lamp", "ShopA", 30, "auto_pay"),
-        ("Headphones", "ShopB", 120, "needs_approval"),
+        ("Monitor Stand", "ShopE", 55, "needs_approval"),
         ("Webcam", "ShopC", 65, "auto_pay"),
     ]
+    # We'll use at least 3 products from this list
+    random.shuffle(base_products)
+    current_month_products = base_products[:3]  # guaranteed 3
 
-    for i in range(14):
-        product = products[i % len(products)]
-        days_ago = random.randint(1, 56)
-        created = base_date - timedelta(days=days_ago, hours=random.randint(0, 23), minutes=random.randint(0, 59))
-        captured = created + timedelta(minutes=random.randint(5, 60))
+    # Scale amounts so sum <= monthly_cap (leave some headroom)
+    target_sum = min(240.0, monthly_cap * 0.8)
+    raw_sum = sum(p[2] for p in current_month_products)
+    scale = target_sum / raw_sum if raw_sum > 0 else 1.0
 
-        order_id = f"DEMO_{base_date.strftime('%Y%m%d')}_{i:03d}"
+    order_idx = 0
+    for i, (title, merchant, amount, action) in enumerate(current_month_products):
+        # Place at fraction of elapsed time since month start
+        if month_elapsed <= 0:
+            captured = now
+        else:
+            frac = fractions[i % len(fractions)]
+            captured = month_start + timedelta(seconds=month_elapsed * frac)
+            if captured > now:
+                captured = now
+        created = captured - timedelta(minutes=random.randint(5, 60))
+
+        scaled_amount = round(amount * scale, 2)
+        order_id = f"DEMO_{now.strftime('%Y%m%d')}_{order_idx:03d}"
+        order_idx += 1
         cur.execute("""
             INSERT INTO orders (order_id, user_email, title, merchant, amount, currency, action, status, capture_id, created_at, captured_at, demo)
             VALUES (?, ?, ?, ?, ?, 'USD', ?, 'captured', ?, ?, ?, 1)
         """, (
-            order_id, user_email, product[0], product[1], product[2],
-            product[3], f"CAP_{order_id}", created.isoformat(), captured.isoformat()
+            order_id, user_email, title, merchant, scaled_amount,
+            action, f"CAP_{order_id}", created.isoformat(), captured.isoformat()
+        ))
+
+    # --- Previous weeks/months: remaining ~11 orders ---
+    remaining_products = [
+        ("Mechanical Keyboard", "ShopC", 85, "needs_approval"),
+        ("Headphones", "ShopB", 120, "needs_approval"),
+        ("Bluetooth Speaker", "ShopA", 50, "auto_pay"),
+        ("Gaming Mouse", "ShopB", 60, "needs_approval"),
+        ("External SSD", "ShopC", 90, "auto_pay"),
+        ("Laptop Stand", "ShopD", 40, "needs_approval"),
+        ("Monitor Light Bar", "ShopE", 35, "auto_pay"),
+        ("Keyboard Wrist Rest", "ShopA", 25, "auto_pay"),
+        ("USB-C Cable", "ShopB", 15, "auto_pay"),
+        ("Portable Charger", "ShopC", 40, "auto_pay"),
+        ("Desk Organizer", "ShopD", 30, "needs_approval"),
+    ]
+    # Add the unused current month products to reach ~14 total
+    all_remaining = base_products[3:] + remaining_products
+    random.shuffle(all_remaining)
+
+    for i, (title, merchant, amount, action) in enumerate(all_remaining[:11]):
+        # Spread over previous 8 weeks (56 days) but not in current month
+        # days_ago starts after the month boundary
+        min_days_ago = max(1, int((now - month_start).days) + 1)
+        days_ago = random.randint(min_days_ago, min_days_ago + 55)
+        created = now - timedelta(days=days_ago, hours=random.randint(0, 23), minutes=random.randint(0, 59))
+        captured = created + timedelta(minutes=random.randint(5, 60))
+
+        order_id = f"DEMO_{now.strftime('%Y%m%d')}_{order_idx:03d}"
+        order_idx += 1
+        cur.execute("""
+            INSERT INTO orders (order_id, user_email, title, merchant, amount, currency, action, status, capture_id, created_at, captured_at, demo)
+            VALUES (?, ?, ?, ?, ?, 'USD', ?, 'captured', ?, ?, ?, 1)
+        """, (
+            order_id, user_email, title, merchant, amount,
+            action, f"CAP_{order_id}", created.isoformat(), captured.isoformat()
         ))
     conn.commit()
 
 
 def seed_demo(conn: sqlite3.Connection) -> None:
-    """Backward compatibility: seed demo@mandate.app"""
+    """Backward compatibility: seed demo@budgie.app"""
     seed_demo_for_user(conn, DEMO_EMAIL)
 
 
@@ -184,6 +263,14 @@ def get_run(run_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def update_run_payload(run_id: str, payload: Dict[str, Any]) -> None:
+    """Update the stored run payload with new data (e.g., order info for idempotency)."""
+    with db_cursor() as cur:
+        cur.execute("""
+            UPDATE runs SET payload_json = ? WHERE run_id = ?
+        """, (json.dumps(payload), run_id))
+
+
 def get_order(order_id: str) -> Optional[Dict[str, Any]]:
     with db_cursor() as cur:
         cur.execute("SELECT * FROM orders WHERE order_id = ?", (order_id,))
@@ -208,8 +295,9 @@ def capture_order_db(
         return cur.rowcount > 0
 
 
-def get_monthly_spent(user_email: str) -> float:
-    now = datetime.utcnow()
+def get_monthly_spent(user_email: str, now: Optional[datetime] = None) -> float:
+    if now is None:
+        now = datetime.utcnow()
     month_start = datetime(now.year, now.month, 1).isoformat()
     next_month = now.month + 1
     next_year = now.year
@@ -227,21 +315,23 @@ def get_monthly_spent(user_email: str) -> float:
         return float(cur.fetchone()[0] or 0)
 
 
-def get_spending_data(user_email: str) -> Dict[str, Any]:
+def get_spending_data(user_email: str, now: Optional[datetime] = None) -> Dict[str, Any]:
     from datetime import timedelta
     import calendar
+
+    if now is None:
+        now = datetime.utcnow()
 
     # On-demand demo seeding for this user (if SEED_DEMO=1 and no captured orders)
     if SEED_DEMO:
         with db_cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM orders WHERE user_email = ? AND status = 'captured'", (user_email,))
             if cur.fetchone()[0] == 0:
-                seed_demo_for_user(get_connection(), user_email)
+                seed_demo_for_user(get_connection(), user_email, now=now)
 
-    now = datetime.utcnow()
     month_start = datetime(now.year, now.month, 1)
     monthly_cap = MONTHLY_CAP
-    month_spent = get_monthly_spent(user_email)
+    month_spent = get_monthly_spent(user_email, now=now)
 
     with db_cursor() as cur:
         cur.execute("""

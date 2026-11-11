@@ -1,40 +1,39 @@
-export function formatDetail(detail: unknown): string {
-  if (detail == null) return "";
-  if (typeof detail === "string") return detail;
-  if (Array.isArray(detail)) {
-    return detail
-      .map((item) => formatDetail(item))
+export function formatValue(value: unknown, seen = new WeakSet<object>()): string {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => formatValue(item, seen))
       .filter(Boolean)
       .join(", ");
   }
-  if (typeof detail === "object") {
-    return Object.entries(detail as Record<string, unknown>)
-      .map(([key, value]) => {
-        const formattedValue = formatValue(value);
-        return `${key}: ${formattedValue}`;
-      })
-      .join(" · ");
-  }
-  return String(detail);
-}
-
-function formatValue(value: unknown): string {
-  if (value == null) return "";
-  if (typeof value === "number") {
-    if (Number.isInteger(value) && value > 10 && value < 100000) {
-      return `$${value}`;
-    }
-    return value.toString();
-  }
-  if (typeof value === "string") {
-    const num = Number(value);
-    if (!Number.isNaN(num) && Number.isInteger(num) && num > 10 && num < 100000) {
-      return `$${num}`;
-    }
-    return value;
-  }
   if (typeof value === "object") {
-    return JSON.stringify(value);
+    // Prevent circular reference loops
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
+
+    try {
+      return Object.entries(value as Record<string, unknown>)
+        .map(([key, val]) => {
+          const formattedVal = formatValue(val, seen);
+          return `${key}: ${formattedVal}`;
+        })
+        .join(" · ");
+    } catch {
+      // Fallback if something goes wrong
+      try {
+        return JSON.stringify(value);
+      } catch {
+        return "[Unserializable]";
+      }
+    } finally {
+      seen.delete(value);
+    }
   }
   return String(value);
+}
+
+export function formatDetail(detail: unknown): string {
+  return formatValue(detail);
 }

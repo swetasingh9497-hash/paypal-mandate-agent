@@ -2,6 +2,7 @@ import { mockRun } from "./mockData";
 import type { CaptureResponse, RunResponse, SelectResponse } from "./types";
 import { mockSpending } from "./mockSpending";
 import { normalizeSpending, type SpendingData } from "./spending";
+import { readSession } from "./auth";
 
 export const API_URL: string =
   (import.meta.env["VITE_API_URL"] as string | undefined) || "http://127.0.0.1:8000";
@@ -21,17 +22,31 @@ export function formatError(detail: unknown): string {
   }
 }
 
-async function post<T>(path: string, body?: unknown): Promise<T> {
+async function authorizedFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const session = readSession();
+  const headers = new Headers(options.headers);
+  headers.set("Content-Type", "application/json");
+  if (session) {
+    headers.set("Authorization", `Bearer ${session.token}`);
+  }
+
   let res: Response;
   try {
-    res = await fetch(`${API_URL}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: body === undefined ? null : JSON.stringify(body),
-    });
+    res = await fetch(`${API_URL}${path}`, { ...options, headers });
   } catch {
     throw new ApiError(`Cannot reach API at ${API_URL}`);
   }
+
+  if (res.status === 401) {
+    // Session expired - sign out
+    readSession(); // This doesn't clear, but we need to trigger sign out
+    // We'll need to import signOut from auth, but let's handle it at the call site
+    // For now, throw a special error
+    const err = new ApiError("Session expired. Sign in again.");
+    (err as any).status = 401;
+    throw err;
+  }
+
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     const detail = data && typeof data === "object" && "detail" in data ? data.detail : data ?? `HTTP ${res.status}`;
@@ -42,44 +57,47 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export async function runMandate(text: string, demo: boolean, userEmail: string): Promise<RunResponse> {
+export async function runMandate(text: string, demo: boolean): Promise<RunResponse> {
   if (demo) {
     await delay(2000);
     return structuredClone(mockRun);
   }
-  return post<RunResponse>("/api/run", { text, user_email: userEmail });
+  return authorizedFetch<RunResponse>("/api/run", {
+    method: "POST",
+    body: JSON.stringify({ text }),
+  });
 }
 
 export async function runMockMandate(text: string, demo = true): Promise<RunResponse> {
   if (demo) return structuredClone(mockRun);
-  return post<RunResponse>("/api/mock/run", { text });
+  return authorizedFetch<RunResponse>("/api/mock/run", {
+    method: "POST",
+    body: JSON.stringify({ text }),
+  });
 }
 
-export async function selectProduct(runId: string, productId: string, userEmail: string): Promise<SelectResponse> {
-  return post<SelectResponse>(`/api/runs/${encodeURIComponent(runId)}/select`, { product_id: productId, user_email: userEmail });
+export async function selectProduct(runId: string, productId: string): Promise<SelectResponse> {
+  return authorizedFetch<SelectResponse>(`/api/runs/${encodeURIComponent(runId)}/select`, {
+    method: "POST",
+    body: JSON.stringify({ product_id: productId }),
+  });
 }
 
 export async function captureOrder(orderId: string, demo = false): Promise<CaptureResponse> {
   if (demo) return { status: "COMPLETED", amount: 129.99, currency: "USD", title: "Sony WH-CH720N Noise Cancelling", merchant: "Best Buy" };
   try {
-    return await post<CaptureResponse>(`/api/orders/${encodeURIComponent(orderId)}/capture`);
+    return await authorizedFetch<CaptureResponse>(`/api/orders/${encodeURIComponent(orderId)}/capture`, {
+      method: "POST",
+    });
   } catch (e) {
     if (e instanceof Error && e.message.includes("ORDER_ALREADY_CAPTURED")) return { status: "COMPLETED" };
     throw e;
   }
 }
 
-export async function getSpending(userEmail: string, demo: boolean): Promise<SpendingData> {
-  if (demo) { await delay(600); return mockSpending(userEmail); }
-  let res: Response;
-  try { res = await fetch(`${API_URL}/api/spending?user=${encodeURIComponent(userEmail)}`); }
-  catch { throw new ApiError(`Cannot reach API at ${API_URL}`); }
-  const data: unknown = await res.json().catch(() => null);
-  if (!res.ok) {
-    const detail = data && typeof data === "object" && "detail" in data ? data.detail : `HTTP ${res.status}`;
-    throw new ApiError(formatError(detail));
-  }
-  return normalizeSpending(data, userEmail);
+export async function getSpending(demo: boolean): Promise<SpendingData> {
+  if (demo) { await delay(600); return mockSpending("demo@budgie.app"); }
+  return authorizedFetch<SpendingData>("/api/spending");
 }
 
-export const CHOSEN_KEY = "mandate:chosen";
+export const CHOSEN_KEY = "budgie:chosen";

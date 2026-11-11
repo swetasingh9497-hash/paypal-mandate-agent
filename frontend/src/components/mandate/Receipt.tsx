@@ -3,7 +3,7 @@ import { BarChart3, Check, Copy, RotateCcw, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useMemo, useState } from "react";
 import type { CaptureResponse } from "@/lib/types";
-import { usd } from "./shared";
+import { formatMoney } from "@/lib/formatMoney";
 
 export interface ReceiptData {
   orderId: string;
@@ -56,7 +56,7 @@ export function Receipt({ data, onReset, onViewSpending }: { data: ReceiptData; 
   const title = c.title || data.stored?.title || "Your purchase";
   const merchant = c.merchant || data.stored?.merchant || "Merchant";
   const amountNum = Number(c.amount ?? data.stored?.price);
-  const amount = Number.isFinite(amountNum) ? usd(amountNum) : "—";
+  const amount = Number.isFinite(amountNum) ? formatMoney(amountNum) : "—";
 
   return (
     <>
@@ -87,7 +87,7 @@ export function Receipt({ data, onReset, onViewSpending }: { data: ReceiptData; 
             {c.status && <Row label="Status" value={c.status} />}
           </div>
           <button onClick={onReset} className="flex w-full items-center justify-center gap-2 rounded-full bg-gradient-accent px-6 py-3 font-semibold">
-            <RotateCcw className="size-4" aria-hidden /> New mandate
+            <RotateCcw className="size-4" aria-hidden /> New budgie
           </button>
           <Button variant="outline" onClick={onViewSpending} className="w-full rounded-full"><BarChart3 />View spending</Button>
         </div>

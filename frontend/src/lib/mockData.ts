@@ -49,7 +49,7 @@ export const mockRun: RunResponse = {
     },
   },
   audit: [
-    { step: "parse", detail: "Mandate: headphones, max $200, rating 4.5+, 5 days" },
+    { step: "parse", detail: "Budgie: headphones, max $200, rating 4.5+, 5 days" },
     { step: "search", detail: "Queried 4 merchants, 6 results" },
     { step: "normalize", detail: "Prices normalized to USD" },
     { step: "rules", detail: "3 rejected, 3 passed hard limits" },
