@@ -1,4 +1,12 @@
-import { createContext, createElement, useContext, useEffect, useState, type ReactNode } from "react";
+import { formatDetail } from "@/lib/formatDetail";
+import {
+  createContext,
+  createElement,
+  useContext,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
 
 export interface User {
   email: string;
@@ -16,30 +24,49 @@ export const DEMO_KEY = "budgie:demo";
 export function readSession(): AuthSession | null {
   try {
     const value = JSON.parse(localStorage.getItem(SESSION_KEY) || "null");
-    return value && typeof value.token === "string" && value.user && typeof value.user.email === "string" && typeof value.user.name === "string"
+
+    return value &&
+      typeof value.token === "string" &&
+      value.user &&
+      typeof value.user.email === "string" &&
+      typeof value.user.name === "string"
       ? value
       : null;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 export function persistSession(session: AuthSession | null) {
   try {
-    if (session) localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-    else localStorage.removeItem(SESSION_KEY);
-  } catch { /* Storage may be unavailable; this session still works in memory. */ }
+    if (session) {
+      localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    } else {
+      localStorage.removeItem(SESSION_KEY);
+    }
+  } catch {
+    // Storage may be unavailable; this session still works in memory.
+  }
 }
 
+// Demo mode always starts disabled on a fresh application load.
 export function readDemo(): boolean {
   try {
-    const value = localStorage.getItem(DEMO_KEY);
-    return value === "true";
-  } catch { return false; }
+    localStorage.removeItem(DEMO_KEY);
+  } catch {
+    // Storage may be unavailable.
+  }
+
+  return false;
 }
 
-export function persistDemo(demo: boolean) {
+// Demo mode is intentionally not persisted across page reloads.
+export function persistDemo(_demo: boolean) {
   try {
-    localStorage.setItem(DEMO_KEY, String(demo));
-  } catch { /* Storage may be unavailable. */ }
+    localStorage.removeItem(DEMO_KEY);
+  } catch {
+    // Storage may be unavailable.
+  }
 }
 
 interface AuthState {
@@ -55,18 +82,28 @@ interface AuthState {
 
 const AuthContext = createContext<AuthState | null>(null);
 
-const API_URL = (import.meta.env["VITE_API_URL"] as string | undefined) || "http://127.0.0.1:8000";
+const API_URL =
+  (import.meta.env["VITE_API_URL"] as string | undefined) ||
+  "http://127.0.0.1:8000";
 
-async function fetchWithAuth(path: string, options: RequestInit = {}): Promise<Response> {
-  const session = readSession();
+async function fetchWithAuth(
+  path: string,
+  options: RequestInit = {},
+): Promise<Response> {
   const headers = new Headers(options.headers);
+
   headers.set("Content-Type", "application/json");
-  const sessionData = readSession();
-  if (sessionData) {
-    headers.set("Authorization", `Bearer ${sessionData.token}`);
+
+  const session = readSession();
+
+  if (session) {
+    headers.set("Authorization", `Bearer ${session.token}`);
   }
-  const res = await fetch(`${API_URL}${path}`, { ...options, headers });
-  return res;
+
+  return fetch(`${API_URL}${path}`, {
+    ...options,
+    headers,
+  });
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -76,27 +113,52 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const storedSession = readSession();
-    const storedDemo = readDemo();
-    setSession(storedSession);
-    setDemo(storedDemo);
 
-    // If we have a session, verify it with the backend
+    setSession(storedSession);
+    setDemo(false);
+
     if (storedSession) {
       fetchWithAuth("/api/auth/me")
         .then(async (res) => {
-          if (res.ok) {
-            const data = await res.json();
-            setSession({ token: storedSession.token, user: data.user });
-          } else {
+          if (!res.ok) {
             persistSession(null);
             setSession(null);
+            return;
           }
+
+          const data: unknown = await res.json();
+
+          if (
+            typeof data !== "object" ||
+            data === null ||
+            !("email" in data) ||
+            typeof data.email !== "string" ||
+            !("name" in data) ||
+            typeof data.name !== "string"
+          ) {
+            persistSession(null);
+            setSession(null);
+            return;
+          }
+
+          const restoredSession: AuthSession = {
+            token: storedSession.token,
+            user: {
+              email: data.email,
+              name: data.name,
+            },
+          };
+
+          persistSession(restoredSession);
+          setSession(restoredSession);
         })
         .catch(() => {
           persistSession(null);
           setSession(null);
         })
-        .finally(() => setReady(true));
+        .finally(() => {
+          setReady(true);
+        });
     } else {
       setReady(true);
     }
@@ -108,14 +170,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password }),
     });
+
     const data = await res.json().catch(() => null);
+
     if (!res.ok) {
-      const detail = data && typeof data === "object" && "detail" in data ? data.detail : data ?? `HTTP ${res.status}`;
-      throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+      const detail =
+        data && typeof data === "object" && "detail" in data
+          ? data.detail
+          : data ?? `HTTP ${res.status}`;
+
+      throw new Error(formatDetail(detail) || `HTTP ${res.status}`);
     }
-    const authSession = { token: data.token, user: data.user };
+
+    const authSession: AuthSession = {
+      token: data.token,
+      user: data.user,
+    };
+
     persistSession(authSession);
     setSession(authSession);
+    setDemoValue(false);
   }
 
   async function register(email: string, password: string, name?: string) {
@@ -124,14 +198,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password, name }),
     });
+
     const data = await res.json().catch(() => null);
+
     if (!res.ok) {
-      const detail = data && typeof data === "object" && "detail" in data ? data.detail : data ?? `HTTP ${res.status}`;
-      throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+      const detail =
+        data && typeof data === "object" && "detail" in data
+          ? data.detail
+          : data ?? `HTTP ${res.status}`;
+
+      const message = Array.isArray(detail)
+  ? detail
+      .map((item: unknown) =>
+        item && typeof item === "object" && "msg" in item
+          ? String(item.msg)
+          : formatDetail(item),
+      )
+      .join("; ")
+  : formatDetail(detail);
+
+throw new Error(message || `HTTP ${res.status}`);
     }
-    const authSession = { token: data.token, user: data.user };
+
+    const authSession: AuthSession = {
+      token: data.token,
+      user: data.user,
+    };
+
     persistSession(authSession);
     setSession(authSession);
+    setDemoValue(false);
   }
 
   async function demoLogin() {
@@ -139,33 +235,64 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
     });
+
     const data = await res.json().catch(() => null);
+
     if (!res.ok) {
-      const detail = data && typeof data === "object" && "detail" in data ? data.detail : data ?? `HTTP ${res.status}`;
-      throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+      const detail =
+        data && typeof data === "object" && "detail" in data
+          ? data.detail
+          : data ?? `HTTP ${res.status}`;
+
+      throw new Error(
+        typeof detail === "string" ? detail : JSON.stringify(detail),
+      );
     }
-    const authSession = { token: data.token, user: data.user };
+
+    const authSession: AuthSession = {
+      token: data.token,
+      user: data.user,
+    };
+
     persistSession(authSession);
     setSession(authSession);
-    setDemoValue(true);
+    setDemoValue(false);
   }
 
   function setDemoValue(value: boolean) {
     setDemo(value);
-    persistDemo(value);
   }
 
   function signOut() {
     persistSession(null);
     setSession(null);
-    setDemoValue(true);
+    setDemoValue(false);
   }
 
-  return createElement(AuthContext.Provider, { value: { session, ready, demo, setDemo: setDemoValue, login, register, demoLogin, signOut } }, children);
+  return createElement(
+    AuthContext.Provider,
+    {
+      value: {
+        session,
+        ready,
+        demo,
+        setDemo: setDemoValue,
+        login,
+        register,
+        demoLogin,
+        signOut,
+      },
+    },
+    children,
+  );
 }
 
 export function useAuth() {
   const auth = useContext(AuthContext);
-  if (!auth) throw new Error("AuthProvider is required");
+
+  if (!auth) {
+    throw new Error("AuthProvider is required");
+  }
+
   return auth;
 }

@@ -18,7 +18,15 @@ describe("Session persistence", () => {
     expect(readSession()).toBeNull();
   });
   it("handles invalid saved sessions", () => { localStorage.setItem("budgie:session", "bad json"); expect(readSession()).toBeNull(); });
-  it("persists demo flag in localStorage", () => { persistDemo(true); expect(readDemo()).toBe(true); persistDemo(false); expect(readDemo()).toBe(false); });
+  it("keeps demo data disabled by default", () => {
+  localStorage.setItem("budgie:demo", "true");
+
+  expect(readDemo()).toBe(false);
+  expect(localStorage.getItem("budgie:demo")).toBeNull();
+
+  persistDemo(true);
+  expect(readDemo()).toBe(false);
+});
 });
 describe("Spending rules", () => {
   it("is green below 70 percent", () => { expect(capTone(349, 500)).toBe("ok"); });

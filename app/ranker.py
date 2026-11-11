@@ -72,7 +72,7 @@ async def rank_products(passing: list[dict], mandate, user_query: str = "") -> O
     })
 
     try:
-        model = os.getenv("LLM_MODEL") or os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+        model = os.getenv("LLM_MODEL") or os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",

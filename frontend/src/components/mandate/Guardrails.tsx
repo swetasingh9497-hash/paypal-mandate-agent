@@ -77,10 +77,24 @@ export function PriceZone({ mandate, candidates, chosenId }: { mandate: Mandate;
           )}
         </div>
         <div className="relative mt-3 text-xs text-muted-foreground tnum">
-          <span className="absolute left-0">$0</span>
-          <span className="absolute -translate-x-1/2 text-ok" style={{ left: pct(mandate.auto_approve_under) }}>{formatMoney(mandate.auto_approve_under)}</span>
-          <span className="absolute -translate-x-1/2 text-warn" style={{ left: pct(mandate.max_total) }}>{formatMoney(mandate.max_total)}</span>
-        </div>
+  <span className="absolute left-0">{formatMoney(0)}</span>
+
+  {mandate.auto_approve_under > 0 && (
+    <span
+      className="absolute -translate-x-1/2 text-ok"
+      style={{ left: pct(mandate.auto_approve_under) }}
+    >
+      {formatMoney(mandate.auto_approve_under)}
+    </span>
+  )}
+
+  <span
+    className="absolute -translate-x-1/2 text-warn"
+    style={{ left: pct(mandate.max_total) }}
+  >
+    {formatMoney(mandate.max_total)}
+  </span>
+</div>
       </div>
     </Tooltip.Provider>
   );

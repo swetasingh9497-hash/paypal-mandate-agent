@@ -11,7 +11,7 @@ def _get_client():
     return _client
 
 def complete_json(system: str, user: str) -> str:
-    model = os.getenv("LLM_MODEL", "gemini-2.5-flash-lite")
+    model = os.getenv("LLM_MODEL", "gemini-3.5-flash-lite")
     resp = _get_client().models.generate_content(
         model=model,
         contents=user,
