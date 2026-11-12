@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 import json
 import uuid
+from decimal import Decimal
 
 DB_PATH = os.getenv("DB_PATH", "./orders.db")
 MONTHLY_CAP = float(os.getenv("MONTHLY_CAP", "500"))
@@ -81,6 +82,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             captured_at TEXT,
             demo INTEGER NOT NULL DEFAULT 0
         )
+    """)
+    # Add superseded status support if not exists (migration-safe)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)
     """)
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_orders_user_email ON orders(user_email)
@@ -285,14 +290,151 @@ def capture_order_db(
     currency: str,
     payer_email: Optional[str] = None,
 ) -> bool:
+    """
+    Capture an order after validating that the capture details match the stored order.
+    Returns True if exactly one order was updated, False otherwise.
+    """
     now = datetime.utcnow().isoformat()
     with db_cursor() as cur:
+        # First, fetch the stored order to validate amount and currency
+        cur.execute("""
+            SELECT amount, currency, status FROM orders WHERE order_id = ?
+        """, (order_id,))
+        row = cur.fetchone()
+        if not row:
+            return False
+
+        stored_amount = row["amount"]
+        stored_currency = row["currency"]
+        stored_status = row["status"]
+
+        # Only allow transition from 'created' to 'captured'
+        if stored_status != "created":
+            return False
+
+        # Validate amount and currency match (using Decimal for safe comparison)
+        if Decimal(str(amount)) != Decimal(str(stored_amount)):
+            return False
+        if currency != stored_currency:
+            return False
+
+        # Perform the update
         cur.execute("""
             UPDATE orders
             SET status = 'captured', capture_id = ?, captured_at = ?, amount = ?, currency = ?
             WHERE order_id = ? AND status = 'created'
         """, (capture_id, now, amount, currency, order_id))
-        return cur.rowcount > 0
+        return cur.rowcount == 1
+
+
+def supersede_order_db(
+    order_id: str,
+    user_email: str,
+) -> bool:
+    """
+    Mark an order as superseded when the user switches to a different product.
+    Only transitions from 'created' to 'superseded'.
+    Verifies the order belongs to the given user.
+    Returns True if exactly one order was updated, False otherwise.
+    """
+    with db_cursor() as cur:
+        # Verify order exists, belongs to user, and is in 'created' status
+        cur.execute("""
+            SELECT status, user_email FROM orders WHERE order_id = ?
+        """, (order_id,))
+        row = cur.fetchone()
+        if not row:
+            return False
+
+        stored_status = row["status"]
+        stored_user = row["user_email"]
+
+        # Verify ownership
+        if stored_user != user_email:
+            return False
+
+        # Only allow transition from 'created' to 'superseded'
+        if stored_status != "created":
+            return False
+
+        # Perform the update
+        cur.execute("""
+            UPDATE orders
+            SET status = 'superseded'
+            WHERE order_id = ? AND status = 'created'
+        """, (order_id,))
+        return cur.rowcount == 1
+
+
+def replace_order_atomic(
+    prev_order_id: Optional[str],
+    new_order_id: str,
+    user_email: str,
+    run_id: str,
+    new_order_payload: Dict[str, Any],
+    new_order_data: Dict[str, Any],
+) -> None:
+    """
+    Atomically replace an order in a single transaction:
+    1. Insert the new order with status 'created'
+    2. Update the run payload
+    3. Supersede the previous order (if provided)
+
+    All operations must succeed or all are rolled back.
+    Raises an exception on any failure.
+    """
+    conn = get_connection()
+    try:
+        with conn:
+            cur = conn.cursor()
+
+            # 1. Insert the new order with status 'created'
+            now = datetime.utcnow().isoformat()
+            cur.execute("""
+                INSERT INTO orders (order_id, user_email, title, merchant, amount, currency, action, status, created_at, demo)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'created', ?, ?)
+            """, (
+                new_order_data["order_id"],
+                new_order_data["user_email"],
+                new_order_data["title"],
+                new_order_data["merchant"],
+                new_order_data["amount"],
+                new_order_data["currency"],
+                new_order_data["action"],
+                now,
+                new_order_data["demo"],
+            ))
+            if cur.rowcount != 1:
+                raise RuntimeError("Failed to insert new order")
+
+            # 2. Update the run payload
+            cur.execute("""
+                UPDATE runs SET payload_json = ? WHERE run_id = ?
+            """, (json.dumps(new_order_payload), run_id))
+            if cur.rowcount != 1:
+                raise RuntimeError("Failed to update run payload")
+
+            # 3. Supersede the previous order if provided
+            if prev_order_id:
+                cur.execute("""
+                    SELECT status, user_email FROM orders WHERE order_id = ?
+                """, (prev_order_id,))
+                prev_order = cur.fetchone()
+                if not prev_order:
+                    raise RuntimeError(f"Previous order {prev_order_id} not found")
+                if prev_order["user_email"] != user_email:
+                    raise RuntimeError("Previous order belongs to another user")
+                if prev_order["status"] != "created":
+                    raise RuntimeError(f"Previous order {prev_order_id} is not in 'created' status")
+
+                cur.execute("""
+                    UPDATE orders SET status = 'superseded' WHERE order_id = ? AND status = 'created'
+                """, (prev_order_id,))
+                if cur.rowcount != 1:
+                    raise RuntimeError("Failed to supersede previous order")
+    except Exception as e:
+        # The 'with conn:' context manager will automatically rollback on exception
+        raise
 
 
 def get_monthly_spent(user_email: str, now: Optional[datetime] = None) -> float:

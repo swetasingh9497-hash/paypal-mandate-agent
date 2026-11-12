@@ -14,10 +14,10 @@ from pydantic import BaseModel, Field
 from .paypal import capture_order, create_order
 from .pipeline import run_pipeline, ORDERS
 from .db import (
-    get_order, capture_order_db, get_spending_data, get_run, insert_order,
+    get_order, capture_order_db, supersede_order_db, replace_order_atomic, get_spending_data, get_run, insert_order,
     insert_run, update_run_payload, get_monthly_spent, MONTHLY_CAP, DEMO_EMAIL,
 )
-from .auth import router as auth_router, resolve_user
+from .auth import router as auth_router, resolve_user, require_user
 
 # Environment configuration with safe defaults
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
@@ -61,11 +61,10 @@ app.add_middleware(
 
 class RunRequest(BaseModel):
     text: str = Field(min_length=3, max_length=500)
-    user_email: str = DEMO_EMAIL
 
 class SelectRequest(BaseModel):
     product_id: str
-    user_email: str | None = None  # only used when no login token is sent
+    approved: bool = False  # Must be true for needs_approval products
 
 @app.get("/api/health")
 def health():
@@ -74,8 +73,8 @@ def health():
 @app.post("/api/run")
 async def run(req: RunRequest, request: Request):
     rate_limit(request)
-    # Resolve the user BEFORE the try block so a bad token stays a 401
-    user = resolve_user(request, req.user_email)
+    # Strict authentication: require valid Bearer token
+    user = require_user(request)
     try:
         return await run_pipeline(req.text, user)
     except ValueError as e:
@@ -91,7 +90,7 @@ async def run(req: RunRequest, request: Request):
 
 @app.post("/api/mock/run")
 async def run_mock(req: RunRequest, request: Request):
-    # Stable nakli data, frontend development ke liye
+    # Stable mock data for frontend development
     mock_payload = {
         "mandate": {"item": "desk lamp", "max_total": 60, "currency": "USD",
                     "min_rating": 4.0, "max_delivery_days": 7,
@@ -124,9 +123,12 @@ async def run_mock(req: RunRequest, request: Request):
         "month_spent": 0,
     }
 
+    # Strict authentication for mock endpoint too
+    user = require_user(request)
+
     # Store mock run in DB so select endpoint can find it
     run_id = "mock_run_id"
-    insert_run(run_id, resolve_user(request, req.user_email), mock_payload)
+    insert_run(run_id, user, mock_payload)
 
     return {
         "run_id": run_id,
@@ -135,21 +137,27 @@ async def run_mock(req: RunRequest, request: Request):
 
 @app.post("/api/orders/{order_id}/capture")
 async def capture(order_id: str, request: Request):
+    # Strict authentication
+    user = require_user(request)
+
+    # Order must exist in persistent storage
     order_info = get_order(order_id)
     if not order_info:
-        order_info = ORDERS.get(order_id)
-        if not order_info:
-            raise HTTPException(status_code=404, detail="Order not found")
+        raise HTTPException(status_code=404, detail="Order not found")
 
-    # Only the owner of the order may capture it (checked when we know the owner)
+    # Only the owner of the order may capture it
     owner = order_info.get("user_email")
-    if owner and resolve_user(request, owner) != str(owner).strip().lower():
+    if not owner:
+        raise HTTPException(status_code=403, detail="Order has no owner")
+    if user != str(owner).strip().lower():
         raise HTTPException(status_code=403, detail="This order belongs to another user")
 
     if order_info.get("action") == "reject":
         raise HTTPException(status_code=409, detail="Order was rejected, cannot capture")
-    if order_info.get("status") == "captured":
-        raise HTTPException(status_code=409, detail="Order already captured")
+
+    # Only allow capture for orders with status 'created'
+    if order_info.get("status") != "created":
+        raise HTTPException(status_code=409, detail=f"Order cannot be captured (status: {order_info.get('status')})")
 
     try:
         result = await capture_order(order_id)
@@ -160,10 +168,16 @@ async def capture(order_id: str, request: Request):
         logging.exception("Capture failed")
         raise HTTPException(status_code=502, detail="Payment could not be captured. Please try again.")
 
+    # Verify PayPal order status is COMPLETED
+    paypal_status = result.get("status")
+    if paypal_status != "COMPLETED":
+        raise HTTPException(status_code=409, detail=f"Payment not completed (status: {paypal_status})")
+
     capture_id = None
     amount = None
     currency = None
     payer_email = None
+    capture_status = None
 
     try:
         captures = (
@@ -174,6 +188,7 @@ async def capture(order_id: str, request: Request):
         if captures:
             first = captures[0]
             capture_id = first.get("id")
+            capture_status = first.get("status")
             amt = first.get("amount", {})
             amount = amt.get("value")
             currency = amt.get("currency_code")
@@ -185,14 +200,23 @@ async def capture(order_id: str, request: Request):
     except Exception:
         pass
 
-    if capture_id and amount is not None and currency:
-        capture_order_db(order_id, capture_id, amount, currency, payer_email)
+    # Verify capture status is COMPLETED - missing or non-COMPLETED status is rejected
+    if capture_status is None or capture_status != "COMPLETED":
+        raise HTTPException(status_code=409, detail=f"Capture not completed (status: {capture_status})")
+
+    # Verify required capture fields exist
+    if not capture_id or amount is None or not currency:
+        raise HTTPException(status_code=409, detail="Invalid capture response: missing capture ID, amount, or currency")
+
+    # Attempt to capture in database with validation
+    if not capture_order_db(order_id, capture_id, amount, currency, payer_email):
+        raise HTTPException(status_code=409, detail="Capture failed: order already captured, amount/currency mismatch, or invalid state")
 
     if order_id in ORDERS:
         ORDERS[order_id]["captured"] = True
 
     return {
-        "status": result.get("status"),
+        "status": paypal_status,
         "capture_id": capture_id,
         "amount": amount,
         "currency": currency,
@@ -213,8 +237,9 @@ async def select_product(run_id: str, req: SelectRequest, request: Request):
     payload = run["payload"]
     user_email = run["user_email"]
 
-    # 2. Only the user who made the run may select from it
-    if resolve_user(request, req.user_email) != str(user_email).strip().lower():
+    # 2. Only the user who made the run may select from it (strict auth)
+    user = require_user(request)
+    if user != str(user_email).strip().lower():
         raise HTTPException(status_code=403, detail="User mismatch")
 
     # 3. Find product in candidates
@@ -230,7 +255,11 @@ async def select_product(run_id: str, req: SelectRequest, request: Request):
     if action == "reject":
         raise HTTPException(status_code=409, detail="Product was rejected")
 
-    # 5. Check monthly cap with current captured spend
+    # 5. For needs_approval products, require explicit confirmation
+    if action == "needs_approval" and not req.approved:
+        raise HTTPException(status_code=409, detail="This product requires explicit approval. Set 'approved=true' to confirm.")
+
+    # 6. Check monthly cap with current captured spend
     product = candidate["product"]
     price = product["price"]
     currency = product["currency"]
@@ -241,16 +270,27 @@ async def select_product(run_id: str, req: SelectRequest, request: Request):
             detail=f"Would exceed monthly cap (spent {month_spent:.2f} of {MONTHLY_CAP:.2f})"
         )
 
-    # 6. Check if order already exists for this run_id + product_id
+    # 7. Check if order already exists for this run_id + product_id
     existing_order = payload.get("order")
     if existing_order and existing_order.get("product_id") == req.product_id:
-        return {
-            "order": existing_order,
-            "product": product,
-            "decision": candidate["decision"],
-        }
+        # Same product selected again - return existing valid created order
+        # Check DB status if order exists in DB; if not in DB (e.g., mock order), allow it
+        db_order = get_order(existing_order["id"])
+        if db_order is None or db_order.get("status") == "created":
+            # Order not in DB (mock) or still created - return it
+            return {
+                "order": existing_order,
+                "product": product,
+                "decision": candidate["decision"],
+            }
+        # If order exists in DB but is no longer created (superseded/captured), fall through to create new order
 
-    # 7. Create PayPal order using stored product data (ignore client price)
+    # 8. If switching to a different product, remember the previous order ID
+    prev_order_id = None
+    if existing_order and existing_order.get("product_id") != req.product_id:
+        prev_order_id = existing_order["id"]
+
+    # 9. Create PayPal order using stored product data (ignore client price)
     try:
         o = await create_order(price, currency, product["title"])
         approve_url = next(
@@ -265,23 +305,45 @@ async def select_product(run_id: str, req: SelectRequest, request: Request):
         logging.exception("PayPal order creation failed in select")
         raise HTTPException(status_code=502, detail="Could not create the payment order. Please try again.")
 
-    # 8. Insert order with status "created"
-    insert_order(
-        order_id=o["id"],
-        user_email=user_email,
-        title=product["title"],
-        merchant=product["merchant"],
-        amount=price,
-        currency=currency,
-        action=action,
-        demo=1 if user_email == DEMO_EMAIL else 0,
-    )
+    # 9. Atomically: insert new order, update run payload, supersede previous (if switching)
+    new_order_data = {
+        "order_id": o["id"],
+        "user_email": user_email,
+        "title": product["title"],
+        "merchant": product["merchant"],
+        "amount": price,
+        "currency": currency,
+        "action": action,
+        "demo": 1 if user_email == DEMO_EMAIL else 0,
+    }
 
-    # 9. Save the order into the run payload (so a second select is idempotent)
-    payload["order"] = order
-    update_run_payload(run_id, payload)
+    new_order_payload = {**payload, "order": order}
 
-    # 10. Return response
+    try:
+        replace_order_atomic(
+            prev_order_id=prev_order_id,
+            new_order_id=o["id"],
+            user_email=user_email,
+            run_id=run_id,
+            new_order_payload=new_order_payload,
+            new_order_data=new_order_data,
+        )
+    except RuntimeError as e:
+        error_msg = str(e)
+        if "belongs to another user" in error_msg:
+            raise HTTPException(status_code=403, detail="This order belongs to another user")
+        if "not in 'created' status" in error_msg:
+            raise HTTPException(status_code=409, detail=f"Order cannot be superseded (status: not created)")
+        if "not found" in error_msg:
+            raise HTTPException(status_code=409, detail=f"Previous order not found")
+        if "Failed to update run payload" in error_msg or "Failed to supersede" in error_msg or "Failed to insert" in error_msg:
+            raise HTTPException(status_code=502, detail="Order replacement failed")
+        raise HTTPException(status_code=502, detail="Order replacement failed")
+    except Exception:
+        logging.exception("Order replacement failed")
+        raise HTTPException(status_code=502, detail="Order replacement failed")
+
+    # 12. Return response
     return {
         "order": order,
         "product": product,
@@ -297,5 +359,6 @@ def paypal_cancel():
     return RedirectResponse(f"{FRONTEND_URL}/?cancelled=1")
 
 @app.get("/api/spending")
-async def spending(request: Request, user: str | None = Query(default=None)):
-    return get_spending_data(resolve_user(request, user))
+async def spending(request: Request):
+    user = require_user(request)
+    return get_spending_data(user)

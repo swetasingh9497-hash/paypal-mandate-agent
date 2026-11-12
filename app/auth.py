@@ -88,6 +88,20 @@ def resolve_user(request: Request, fallback=None) -> str:
     return _norm(fallback) or _norm(DEMO_EMAIL)
 
 
+def require_user(request: Request) -> str:
+    """
+    Strict authentication: requires a valid Bearer token.
+    Raises HTTPException 401 if token is missing, malformed, invalid, or expired.
+    """
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Authentication required. Sign in to continue.")
+    email = read_token(auth[7:].strip())
+    if not email:
+        raise HTTPException(status_code=401, detail="Session expired. Sign in again.")
+    return email
+
+
 class RegisterBody(BaseModel):
     email: str = Field(max_length=200)
     password: str = Field(min_length=8, max_length=200)

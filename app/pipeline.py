@@ -2,10 +2,8 @@
 from .parser import parse_mandate
 from .search import search_products
 from .rules import evaluate
-from .paypal import create_order
 from .ranker import rank_products, bayesian_rating
 from .db import (
-    insert_order,
     get_monthly_spent,
     MONTHLY_CAP,
     insert_run,
@@ -185,73 +183,8 @@ async def run_pipeline(
 
             chosen_id = chosen["product"].id
 
+    # Order creation is deferred to the selection endpoint
     order = None
-    order_error = None
-
-    if chosen:
-        p = chosen["product"]
-
-        try:
-            o = await create_order(
-                p.price,
-                p.currency,
-                p.title,
-            )
-
-            approve_url = next(
-                (
-                    link["href"]
-                    for link in o["links"]
-                    if link["rel"] in (
-                        "payer-action",
-                        "approve",
-                    )
-                ),
-                None,
-            )
-
-            order = {
-                "id": o["id"],
-                "approve_url": approve_url,
-                "product_id": p.id,
-            }
-
-            insert_order(
-                order_id=o["id"],
-                user_email=user_email,
-                title=p.title,
-                merchant=p.merchant,
-                amount=p.price,
-                currency=p.currency,
-                action=chosen["decision"].action,
-                demo=(
-                    1
-                    if user_email == DEMO_EMAIL
-                    else 0
-                ),
-            )
-
-            ORDERS[o["id"]] = {
-                "product_id": p.id,
-                "title": p.title,
-                "merchant": p.merchant,
-                "amount": p.price,
-                "currency": p.currency,
-                "action": chosen["decision"].action,
-                "captured": False,
-            }
-
-        except Exception:
-            logging.exception(
-                "PayPal order creation failed"
-            )
-
-            order = None
-
-            order_error = (
-                "Could not create payment order. "
-                "Please try again."
-            )
 
     audit = [
         {
@@ -282,16 +215,6 @@ async def run_pipeline(
                     "chosen_id": chosen_id,
                     "reason": ranker_summary,
                     "notes": ranker_notes,
-                },
-            }
-        )
-
-    if order:
-        audit.append(
-            {
-                "step": "order_created",
-                "detail": {
-                    "order_id": order["id"]
                 },
             }
         )
@@ -335,8 +258,5 @@ async def run_pipeline(
         "run_id": run_id,
         **run_payload,
     }
-
-    if order_error:
-        response["order_error"] = order_error
 
     return response

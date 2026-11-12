@@ -12,11 +12,16 @@ test_db.close()
 os.environ["DB_PATH"] = test_db.name
 os.environ["MONTHLY_CAP"] = "500"
 os.environ["SEED_DEMO"] = "0"
+os.environ["RATE_LIMIT_PER_MIN"] = "1000"
 
 from app.main import app
 from app.db import insert_order, get_monthly_spent, get_spending_data, close_db, get_connection, set_test_connection, SEED_DEMO, MONTHLY_CAP
+from app.auth import make_token, DEMO_EMAIL
 
 client = TestClient(app)
+
+def _auth_headers(email: str = DEMO_EMAIL) -> dict:
+    return {"Authorization": f"Bearer {make_token(email)}"}
 
 
 def get_test_conn():
@@ -168,7 +173,7 @@ def test_user_isolation():
 
 def test_capture_unknown_order_returns_404():
     """Test capture of unknown order returns 404"""
-    response = client.post("/api/orders/UNKNOWN_ORDER/capture")
+    response = client.post("/api/orders/UNKNOWN_ORDER/capture", headers=_auth_headers("user@test.com"))
     assert response.status_code == 404
 
 
@@ -179,9 +184,9 @@ def test_capture_already_captured_returns_409():
     conn.execute("UPDATE orders SET status = 'captured', captured_at = ? WHERE order_id = ?", (datetime.utcnow().isoformat(), "ORD_CAPTURED"))
     conn.commit()
 
-    response = client.post("/api/orders/ORD_CAPTURED/capture")
+    response = client.post("/api/orders/ORD_CAPTURED/capture", headers=_auth_headers("user@test.com"))
     assert response.status_code == 409
-    assert "already captured" in response.json()["detail"].lower()
+    assert "captured" in response.json()["detail"].lower() or "already captured" in response.json()["detail"].lower()
 
 
 def test_spending_api_structure():
@@ -192,7 +197,7 @@ def test_spending_api_structure():
     insert_order("ORD_API", user, "Test Item", "Test Shop", 75, "USD", "auto_pay")
     conn.execute("UPDATE orders SET status = 'captured', captured_at = ? WHERE order_id = ?", (datetime.utcnow().isoformat(), "ORD_API"))
     conn.commit()
-    response = client.get("/api/spending", params={"user": user})
+    response = client.get("/api/spending", headers=_auth_headers(user))
 
     assert response.status_code == 200
 

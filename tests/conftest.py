@@ -10,6 +10,7 @@ _test_db.close()
 os.environ["DB_PATH"] = _test_db.name
 os.environ["MONTHLY_CAP"] = "500"
 os.environ["SEED_DEMO"] = "0"
+os.environ["RATE_LIMIT_PER_MIN"] = "1000"
 
 # Create test connection
 _test_conn = sqlite3.connect(_test_db.name, check_same_thread=False)
@@ -21,15 +22,22 @@ from app.db import set_test_connection, close_db, init_db
 init_db(_test_conn)
 set_test_connection(_test_conn)
 
-from app.main import app, ORDERS
+from app.main import app, ORDERS, _hits
+from app.auth import make_token, DEMO_EMAIL
 
 _client = TestClient(app)
+
+
+def _auth_headers(email: str = DEMO_EMAIL) -> dict:
+    """Return Authorization headers with a valid token for the given email."""
+    return {"Authorization": f"Bearer {make_token(email)}"}
 
 
 @pytest.fixture(autouse=True)
 def clear_db():
     """Clear test data before each test."""
     ORDERS.clear()
+    _hits.clear()
     _test_conn.execute("DELETE FROM orders")
     _test_conn.execute("DELETE FROM runs")
     _test_conn.commit()

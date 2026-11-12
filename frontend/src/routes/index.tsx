@@ -1,14 +1,13 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowRight, Gauge, ListTree, Loader2, Package, ScrollText, Shield, Sparkles, X } from "lucide-react";
+import { ArrowRight, Gauge, ListTree, Loader2, Package, Shield, Sparkles, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth";
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { CHOSEN_KEY, captureOrder, runMandate, selectProduct } from "@/lib/api";
 import type { Candidate, RunResponse } from "@/lib/types";
 import { Pipeline, type PipelineStatus } from "@/components/mandate/Pipeline";
 import { Guardrails, PriceZone } from "@/components/mandate/Guardrails";
-import { OtherCandidates, Recommendation, SafeAudit } from "@/components/mandate/Recommendation";
+import { OtherCandidates, Recommendation } from "@/components/mandate/Recommendation";
 import { Cancelled, Receipt, type ReceiptData } from "@/components/mandate/Receipt";
 import { Section, fadeUp } from "@/components/mandate/shared";
 import { formatAudit } from "@/lib/formatAudit";
@@ -130,8 +129,11 @@ function MandateApp() {
       return;
     }
 
+    // For needs_approval products, send approved=true only after user confirms in dialog
+    const approved = candidate.decision.action === "needs_approval";
+
     try {
-      const result = await selectProduct(data.run_id, candidate.product.id);
+      const result = await selectProduct(data.run_id, candidate.product.id, approved);
 
       // Save selected candidate for receipt
       sessionStorage.setItem(CHOSEN_KEY, JSON.stringify(candidate));
@@ -251,19 +253,7 @@ function MandateApp() {
                           onSelect={handleSelect}
                         />
                       </Section>
-                      {data.audit && data.audit.length > 0 && (
-                        <Section title="Audit trail" icon={<ScrollText className="size-4" />} i={4}>
-                          <Accordion type="single" collapsible className="glass px-5">
-                            <AccordionItem value="audit" className="border-none">
-                              <AccordionTrigger>{data.audit.length} entries</AccordionTrigger>
-                              <AccordionContent>
-                                <SafeAudit data={data} />
-                              </AccordionContent>
-                            </AccordionItem>
-                          </Accordion>
-                        </Section>
-                      )}
-                    </div>
+                                          </div>
                   )}
                 </AnimatePresence>
               </>

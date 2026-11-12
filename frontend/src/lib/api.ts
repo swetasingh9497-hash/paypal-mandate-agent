@@ -76,23 +76,23 @@ export async function runMockMandate(text: string, demo = true): Promise<RunResp
   });
 }
 
-export async function selectProduct(runId: string, productId: string): Promise<SelectResponse> {
+export async function selectProduct(runId: string, productId: string, approved = false): Promise<SelectResponse> {
   return authorizedFetch<SelectResponse>(`/api/runs/${encodeURIComponent(runId)}/select`, {
     method: "POST",
-    body: JSON.stringify({ product_id: productId }),
+    body: JSON.stringify({ product_id: productId, approved }),
   });
 }
 
 export async function captureOrder(orderId: string, demo = false): Promise<CaptureResponse> {
   if (demo) return { status: "COMPLETED", amount: 129.99, currency: "USD", title: "Sony WH-CH720N Noise Cancelling", merchant: "Best Buy" };
-  try {
-    return await authorizedFetch<CaptureResponse>(`/api/orders/${encodeURIComponent(orderId)}/capture`, {
-      method: "POST",
-    });
-  } catch (e) {
-    if (e instanceof Error && e.message.includes("ORDER_ALREADY_CAPTURED")) return { status: "COMPLETED" };
-    throw e;
+  const capture = await authorizedFetch<CaptureResponse>(`/api/orders/${encodeURIComponent(orderId)}/capture`, {
+    method: "POST",
+  });
+  // Verify the capture was actually completed
+  if (capture.status !== "COMPLETED") {
+    throw new ApiError(capture.status ? `Payment not completed (status: ${capture.status})` : "Payment not completed");
   }
+  return capture;
 }
 
 export async function getSpending(demo: boolean): Promise<SpendingData> {

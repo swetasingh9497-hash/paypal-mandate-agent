@@ -334,7 +334,7 @@ export function Recommendation({
   // EMPTY STATE
   // ==================================================
 
-  if (!chosen || !data.order) {
+  if (!chosen) {
 
     const rejectReasons = Array.from(
       new Set(
