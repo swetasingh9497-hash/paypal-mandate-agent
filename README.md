@@ -1,6 +1,8 @@
 # Budgie
 
-> Budgie is a guardrailed AI shopping agent: you set limits in plain language, the LLM proposes, plain Python rules decide, PayPal moves the money.
+> An AI shopping agent that buys on your behalf, but only inside the spending rules you set. Payments run through PayPal.
+
+*(Formerly "Mandate". The repository name `paypal-mandate-agent` is kept from that earlier name.)*
 
 ## The problem
 
@@ -10,69 +12,72 @@ AI agents can already search and shop, but people don't trust them with their mo
 
 You give Budgie a **mandate** in plain language, for example:
 
-> "A desk lamp under $60, rated 4 stars or above, delivered within a week."
+> "Mouse under $50, auto-buy under $30."
 
-The agent turns this into strict rules, finds matching products, and checks every candidate against those rules. Depending on the result it will:
+Budgie turns this into strict rules, finds matching products, and checks every candidate against those rules. Each product gets one of three decisions, with reasons:
 
-- **Auto-pay** if the item is within your auto-approve limit,
-- **Ask for your approval** if it passes the rules but costs more than that limit,
-- **Reject** the item if it breaks any rule, and tell you exactly why.
+- **`auto_pay`**: within your auto-approve limit (the buyer still approves on PayPal)
+- **`needs_approval`**: passes the rules but needs your explicit confirmation, or has missing data (e.g. no rating or delivery estimate)
+- **`reject`**: breaks a rule, and Budgie tells you exactly why
 
-**The key design idea: the LLM never decides whether money moves.** The LLM only (1) translates your request into structured rules and (2) ranks and explains the products that already passed. The payment decision is made by plain, tested Python code.
+**Core principle: the LLM proposes, deterministic code decides, PayPal executes.** The LLM only (1) translates your request into a structured mandate and (2) ranks and explains products that already passed the rules. It cannot change prices, override a rejection or authorize a payment.
 
 ## How it works
 
 ```
 Mandate (text)
-   -> LLM parser -> validated Mandate (JSON)
-   -> Product search
+   -> Gemini parser -> validated Mandate (Pydantic) + budget grounding check
+   -> Product search (Channel3, mock fallback)
    -> Rules engine (deterministic Python) -> auto_pay | needs_approval | reject
-   -> LLM ranks and explains the passing products
-   -> PayPal order -> buyer approval -> capture
+   -> Gemini ranks and explains the passing products
+   -> PayPal Sandbox order -> buyer approval -> verified capture
 ```
-
-<!-- TODO: add an architecture diagram image here -->
 
 ## Why PayPal and AI both matter
 
-- **AI:** the LLM (a) parses the plain-language mandate into validated JSON, and (b) ranks only the products that already passed the rules and explains the pick. It never decides or moves money.
-- **PayPal:** Orders API to create and capture payments, buyer approval flow
+- **AI (Google Gemini):** parses natural-language requests into structured mandates, and ranks and explains products that already passed the rules.
+- **PayPal:** the Orders API (Sandbox) creates the order, the buyer approves it on PayPal, and the backend verifies the capture (status, capture ID, amount, currency) before saving anything.
 
-Neither works alone: without AI there is no agent, and without PayPal the agent cannot safely complete a purchase.
+Without AI there is no agent. Without PayPal the agent cannot safely complete a purchase.
 
 ## Features
 
 - Natural-language mandate -> validated structured rules
-- Deterministic rules engine (budget, rating, delivery time, blocked merchants, currency)
-- Safe defaults: missing data means reject
-- Human approval flow for purchases above the auto-approve limit
-- Full audit trail: why each product was chosen or rejected
+- Budget grounding check: budget values must actually appear in the user's request
+- Deterministic rules engine (budget, rating, delivery, monthly spending cap)
+- Missing data (rating, delivery) routes to human approval instead of auto-rejecting
+- Approval flow before payment, with PayPal buyer approval
+- Spending dashboard with monthly limits and recent orders
+- Audit events for pipeline decisions and payment operations
+- Fallback product ranking and mock product search when external services are unavailable
 
 ## Safety design
 
 - The rules engine is plain code with unit tests, not an LLM.
-- Product titles and descriptions are treated as untrusted text. Input sanitization and grounded parsing reject injected instructions.
-- Missing data (no rating, no delivery estimate) is rejected, never assumed fine.
+- Product titles and descriptions are treated as untrusted input (prompt injection cannot change the rules).
+- The server uses the price stored during the shopping run, never a price sent by the browser.
+- Authenticated access with order ownership checks.
+- Atomic order replacement: switching products supersedes the old order in one database transaction, and superseded orders cannot be captured.
 - Secrets live in `.env` and are never committed.
 
 ## Tech stack
 
-Python, FastAPI, Pydantic, httpx, Google Gemini, Channel3 (product search), React, PayPal Orders API (Sandbox), Railway/Render
+Python, FastAPI, Pydantic, SQLite, httpx, Google Gemini, Channel3, PayPal Orders API (Sandbox), React, TypeScript, Tailwind CSS, pytest, Vitest
 
 ## Getting started
 
 **Prerequisites:** Python 3.11+, Node.js (for the frontend), a PayPal Developer account.
 
 ```bash
-git clone <repo-url>
-cd budgie
+git clone https://github.com/swetasingh9497-hash/paypal-mandate-agent.git
+cd paypal-mandate-agent
 python -m venv .venv
 # Windows: .venv\Scripts\activate   |  Mac/Linux: source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env     # Windows: copy .env.example .env
 ```
 
-Fill in `.env`:
+Fill in `.env` (see `.env.example` for the exact variable names):
 
 ```
 PAYPAL_CLIENT_ID=
@@ -94,25 +99,27 @@ Run the tests:
 pytest -q
 ```
 
-Frontend: `cd frontend && bun install && bun run dev`
+Frontend: see the frontend folder / README for `npm install` and `npm run dev`.
 
 > **Note:** This project uses the PayPal **Sandbox**. No real money moves. To test checkout, use a Sandbox *Personal* (buyer) account created with country set to United States.
 
 ## Demo
 
-- Live app: <link>
-- Demo video: <link>
+- Demo video: https://youtu.be/m7ZWxdQlKno
+- Devpost: https://devpost.com/software/budgie-elprz6
 
 ## Team
 
-- (Add team members here)
+- **Sweta Singh**: backend, Gemini integration, Channel3 search, PayPal Sandbox payment flow
+- **Vaibhav Vishwakarma**: frontend, spending dashboard, testing and integration fixes
 
 ## Limitations and roadmap
 
-- Currently Sandbox only
-- No multi-currency support; all amounts normalized to USD
-- Product search is demo-only (no live catalog integration)
-- Next: real product API, multi-currency, scheduled mandates
+- All payments use PayPal Sandbox. No real money is transferred.
+- Channel3 does not give reliable delivery estimates or ratings for every listing, so some items need manual approval.
+- The spending dashboard may mix seeded sample data with real Sandbox orders (sample data is labelled).
+- Auth is a prototype mechanism, not a production identity provider.
+- Next: PayPal OAuth, per-category budgets and recurring purchases, better delivery/rating data, persistent database and stronger rate limiting, and an independent security review before any real-money use.
 
 ## License
 
