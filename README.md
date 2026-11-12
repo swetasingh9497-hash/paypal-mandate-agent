@@ -99,7 +99,30 @@ Run the tests:
 pytest -q
 ```
 
-Frontend: see the frontend folder / README for `npm install` and `npm run dev`.
+## Frontend
+
+The frontend is built with React, TypeScript and Tailwind CSS (Vite). Make sure the backend is running first.
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open the URL printed in the terminal (for example `http://localhost:8080` or `http://localhost:5173`).
+
+If the frontend needs to know where the backend runs, create `frontend/.env`:
+
+```
+VITE_API_URL=http://localhost:8000
+```
+
+Run the frontend tests and the production build:
+
+```bash
+npm run test
+npm run build
+```
 
 > **Note:** This project uses the PayPal **Sandbox**. No real money moves. To test checkout, use a Sandbox *Personal* (buyer) account created with country set to United States.
 
